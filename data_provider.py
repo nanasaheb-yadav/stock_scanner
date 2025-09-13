@@ -495,7 +495,7 @@ class DataProvider:
             ticker = yf.Ticker(symbol)
             
             # Fetch monthly data (using as weekly for broader analysis)
-            hist = ticker.history(period=period, interval="1mo")
+            hist = ticker.history(period=period, interval="1wk")
             
             if hist.empty:
                 print(f"No data found for {symbol}")
