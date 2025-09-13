@@ -481,40 +481,43 @@ class DataProvider:
         }
     
     @staticmethod
-    def fetch_weekly_data(symbol: str, period: str = "2y") -> pd.DataFrame:
+    def fetch_weekly_data(symbol: str, years: int = 2) -> pd.DataFrame:
         """
-        Fetch weekly historical data for a stock
-        Args:
-            symbol: Yahoo Finance symbol (e.g., 'RELIANCE.NS')
-            period: Data period ('1y', '2y', '5y', 'max')
-        Returns:
-            DataFrame with Date, Open, High, Low, Close, Volume columns
+        Fetch at least `years` of weekly data for `symbol`.
+        Falls back to daily→weekly resampling if needed.
         """
-        try:
-            # Create ticker object
-            ticker = yf.Ticker(symbol)
-            
-            # Fetch monthly data (using as weekly for broader analysis)
-            hist = ticker.history(period=period, interval="1wk")
-            
-            if hist.empty:
-                print(f"No data found for {symbol}")
-                return pd.DataFrame()
-            
-            # Reset index to make Date a column
-            hist.reset_index(inplace=True)
-            
-            # Standardize column names
-            hist.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-            
-            # Ensure data is sorted by date
-            hist = hist.sort_values('Date').reset_index(drop=True)
-            
-            return hist
-            
-        except Exception as e:
-            print(f"Error fetching data for {symbol}: {e}")
-            return pd.DataFrame()
+        end_date = datetime.today()
+        start_date = end_date - timedelta(days=years * 365)
+
+        # 1) Try real weekly bars
+        df = yf.Ticker(symbol).history(
+            start=start_date.strftime("%Y-%m-%d"),
+            end=end_date.strftime("%Y-%m-%d"),
+            interval="1wk"
+        )
+
+        # 2) If too few bars, fallback to daily and resample to weekly
+        if len(df) < years * 40:  # ~40 weeks per year
+            daily = yf.Ticker(symbol).history(
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d"),
+                interval="1d"
+            )
+            if len(daily) == 0:
+                return pd.DataFrame()  # no data available
+
+            # Resample to weekly (Friday close)
+            weekly = pd.DataFrame({
+                'Open': daily['Open'].resample('W-FRI').first(),
+                'High': daily['High'].resample('W-FRI').max(),
+                'Low': daily['Low'].resample('W-FRI').min(),
+                'Close': daily['Close'].resample('W-FRI').last(),
+                'Volume': daily['Volume'].resample('W-FRI').sum()
+            }).dropna()
+
+            return weekly.reset_index()
+
+        return df.reset_index()
     
     @staticmethod
     def get_current_price(symbol: str) -> float:
