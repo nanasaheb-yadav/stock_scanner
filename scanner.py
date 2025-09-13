@@ -72,8 +72,9 @@ class StockScanner:
                         # Fetch weekly data
                         weekly_data = DataProvider.fetch_weekly_data(symbol, period="2y")
                         
-                        if weekly_data.empty:
-                            scan_metadata['errors'].append(f"No data available for {symbol}")
+                        if weekly_data.empty or len(weekly_data) < 20:
+                            # Skip symbols with fewer than 20 weekly data points
+                            scan_metadata['errors'].append(f"Insufficient data for {symbol} ({len(weekly_data)} weeks)")
                             continue
                         
                         # Perform technical analysis
