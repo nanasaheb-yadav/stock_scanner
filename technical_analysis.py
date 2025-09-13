@@ -120,6 +120,7 @@ class TechnicalAnalysis:
     def analyze_stock(symbol: str, df: pd.DataFrame) -> Dict[str, Any]:
         """
         Complete 5-criteria analysis for a single stock
+        Now qualifies stocks with 2+ criteria instead of all 5
         Returns analysis results and qualification status
         """
         try:
@@ -142,7 +143,7 @@ class TechnicalAnalysis:
             latest_hma_30 = hma_30.iloc[-1] if not pd.isna(hma_30.iloc[-1]) else 0
             latest_hma_44 = hma_44.iloc[-1] if not pd.isna(hma_44.iloc[-1]) else 0
             
-            # Check criteria
+            # Check criteria (same 5 criteria, but now qualify with 2+)
             criteria_met = 0
             criteria_details = {}
             
@@ -215,6 +216,23 @@ class TechnicalAnalysis:
                 stop_loss = current_price * 0.95
                 target = current_price * 1.15
             
+            # Determine setup strength based on criteria count
+            if criteria_met == 5:
+                setup_strength = "PERFECT"
+                confidence_level = "VERY HIGH"
+            elif criteria_met == 4:
+                setup_strength = "STRONG"  
+                confidence_level = "HIGH"
+            elif criteria_met == 3:
+                setup_strength = "GOOD"
+                confidence_level = "MODERATE"
+            elif criteria_met == 2:
+                setup_strength = "MODERATE"
+                confidence_level = "CAUTIOUS"
+            else:
+                setup_strength = "WEAK"
+                confidence_level = "LOW"
+            
             return {
                 'symbol': symbol,
                 'current_price': float(current_price),
@@ -222,7 +240,9 @@ class TechnicalAnalysis:
                 'hma_44': float(latest_hma_44),
                 'criteria_met': criteria_met,
                 'criteria_details': criteria_details,
-                'qualified': criteria_met >= 5,
+                'qualified': criteria_met >= 2,  # CHANGED: Now qualifies with 2+ criteria
+                'setup_strength': setup_strength,
+                'confidence_level': confidence_level,
                 'risk_reward': round(risk_reward, 2),
                 'stop_loss': round(stop_loss, 2),
                 'target': round(target, 2),
