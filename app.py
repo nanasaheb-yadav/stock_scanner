@@ -1,5 +1,3 @@
-# app.py - Minimalist Design + Fixed Stock Analysis
-
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -7,17 +5,18 @@ import requests
 from datetime import datetime, timedelta
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
-import asyncio
+import time
 import warnings
 warnings.filterwarnings('ignore')
 
 app = FastAPI(title="Stock Scanner Pro")
 
-# Configuration
+# Configuration - Made more lenient
 CONFIG = {
-    'min_market_cap_cr': 10,  # Reduced to 10 cr for broader coverage
-    'fundamental_score_threshold': 5,  # Slightly relaxed threshold
-    'technical_score_threshold': 50
+    'min_market_cap_cr': 1,  # Very low threshold - 1 cr
+    'fundamental_score_threshold': 3,  # Lower threshold
+    'technical_score_threshold': 30,  # Lower threshold
+    'request_delay': 0.1  # Delay between requests
 }
 
 # Global storage
@@ -30,19 +29,24 @@ scan_data = {
     "technical_qualified": 0,
     "fundamental_results": [],
     "final_results": [],
-    "last_update": None
+    "last_update": None,
+    "debug_info": []
 }
 
-# NSE Stock Universe
+# Enhanced NSE Stock Universe
 def get_nse_symbols():
-    """Get NSE symbols with fallback"""
+    """Get NSE symbols with comprehensive fallback"""
     symbols = set()
     
     # Try NSE API first
     try:
         url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.get(url, headers=headers, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
+        response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200:
             data = response.json()
             for stock in data.get('data', []):
@@ -52,8 +56,9 @@ def get_nse_symbols():
     except Exception as e:
         print(f"NSE API failed: {e}")
     
-    # Fallback list
+    # Comprehensive fallback list - Most liquid NSE stocks
     fallback_stocks = [
+        # Nifty 50
         "RELIANCE.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "TCS.NS",
         "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "ASIANPAINT.NS",
         "MARUTI.NS", "BAJFINANCE.NS", "HCLTECH.NS", "AXISBANK.NS", "LT.NS",
@@ -64,6 +69,8 @@ def get_nse_symbols():
         "DRREDDY.NS", "SBILIFE.NS", "GRASIM.NS", "CIPLA.NS", "TATACONSUM.NS",
         "BRITANNIA.NS", "EICHERMOT.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "UPL.NS",
         "HINDALCO.NS", "BPCL.NS", "IOC.NS", "APOLLOHOSP.NS", "PIDILITIND.NS",
+        
+        # Next 50 most liquid
         "ABB.NS", "ADANIENT.NS", "ADANIGREEN.NS", "AMBUJACEM.NS", "AUBANK.NS",
         "BANKBARODA.NS", "BERGEPAINT.NS", "BEL.NS", "BIOCON.NS", "BOSCHLTD.NS",
         "CANBK.NS", "CHOLAFIN.NS", "COLPAL.NS", "CONCOR.NS", "DABUR.NS",
@@ -73,199 +80,301 @@ def get_nse_symbols():
         "JUBLFOOD.NS", "LICHSGFIN.NS", "LUPIN.NS", "MARICO.NS", "MGL.NS",
         "MPHASIS.NS", "MRF.NS", "NAUKRI.NS", "NMDC.NS", "OFSS.NS",
         "PAGEIND.NS", "PETRONET.NS", "PEL.NS", "PNB.NS", "PFC.NS",
-        "RBLBANK.NS", "SAIL.NS", "SBICARD.NS", "SIEMENS.NS", "SRF.NS",
-        "ZOMATO.NS", "PAYTM.NS", "NYKAA.NS", "POLICYBZR.NS"  # Added newer stocks
+        "RBLBANK.NS", "SAIL.NS", "SBICARD.NS", "SIEMENS.NS", "SRF.NS"
     ]
     
     symbols.update(fallback_stocks)
-    return sorted(list(symbols))
+    final_list = sorted(list(symbols))
+    print(f"Total symbols loaded: {len(final_list)}")
+    return final_list
 
-# Fixed Fundamental Analysis
-def get_fundamental_data(symbol):
-    """Get comprehensive fundamental data with better error handling"""
+# Robust Fundamental Data Fetcher
+def get_fundamental_data_robust(symbol):
+    """Super robust fundamental data fetching with multiple attempts"""
     try:
-        print(f"Fetching data for {symbol}")
+        print(f"🔍 Fetching fundamental data for {symbol}")
+        
+        # Add delay to avoid rate limiting
+        time.sleep(CONFIG['request_delay'])
+        
+        # Create ticker with timeout
         ticker = yf.Ticker(symbol)
         
-        # Get info with timeout
+        # Try multiple data sources
+        info = None
+        
+        # Method 1: Regular info
         try:
             info = ticker.info
-        except Exception as e:
-            print(f"Error fetching info for {symbol}: {e}")
-            return None
+        except Exception as e1:
+            print(f"Method 1 failed for {symbol}: {e1}")
+            
+            # Method 2: Fast info
+            try:
+                info = ticker.fast_info
+            except Exception as e2:
+                print(f"Method 2 failed for {symbol}: {e2}")
+                
+                # Method 3: Get basic data from history
+                try:
+                    history = ticker.history(period="5d")
+                    if not history.empty:
+                        current_price = history['Close'].iloc[-1]
+                        info = {'currentPrice': current_price, 'symbol': symbol.replace('.NS', '')}
+                except Exception as e3:
+                    print(f"Method 3 failed for {symbol}: {e3}")
+                    return None
         
         if not info:
-            print(f"No info data for {symbol}")
+            print(f"❌ No info data for {symbol}")
             return None
         
-        # Extract market cap with multiple fallbacks
-        market_cap = 0
-        if 'marketCap' in info and info['marketCap']:
-            market_cap = info['marketCap']
-        elif 'sharesOutstanding' in info and 'currentPrice' in info:
-            shares = info.get('sharesOutstanding', 0)
-            price = info.get('currentPrice', 0)
-            if shares and price:
+        # Debug: Print available keys
+        print(f"📊 Available data keys for {symbol}: {list(info.keys())[:10]}...")
+        
+        # Extract data with extensive fallbacks
+        def safe_extract(key, default=0, multiplier=1):
+            """Safely extract data with multiple fallback attempts"""
+            try:
+                # Try direct access
+                if key in info and info[key] is not None:
+                    value = info[key]
+                    if isinstance(value, (int, float)) and not pd.isna(value):
+                        return float(value) * multiplier
+                
+                # Try alternative keys
+                alt_keys = {
+                    'currentPrice': ['regularMarketPrice', 'price', 'previousClose'],
+                    'marketCap': ['marketCapitalization', 'sharesOutstanding'],
+                    'trailingPE': ['pe', 'priceToEarningsRatio', 'peRatio'],
+                    'priceToBook': ['pb', 'pbRatio', 'bookValue'],
+                    'returnOnEquity': ['roe', 'returnsOnEquity'],
+                    'returnOnAssets': ['roa', 'returnsOnAssets'],
+                    'profitMargins': ['profitMargin', 'netProfitMargin'],
+                    'debtToEquity': ['debtEquityRatio', 'totalDebtToEquity'],
+                    'currentRatio': ['currentRatio', 'liquidityRatio']
+                }
+                
+                if key in alt_keys:
+                    for alt_key in alt_keys[key]:
+                        if alt_key in info and info[alt_key] is not None:
+                            try:
+                                return float(info[alt_key]) * multiplier
+                            except:
+                                continue
+                
+                return default
+            except:
+                return default
+        
+        # Calculate market cap if not directly available
+        market_cap = safe_extract('marketCap')
+        if market_cap == 0:
+            shares = safe_extract('sharesOutstanding')
+            price = safe_extract('currentPrice')
+            if shares > 0 and price > 0:
                 market_cap = shares * price
         
-        # Apply market cap filter (relaxed to 10 cr)
-        min_market_cap = CONFIG['min_market_cap_cr'] * 10000000  # 10 cr = 100 million
-        if market_cap < min_market_cap:
-            print(f"{symbol} market cap {market_cap/10000000:.1f} cr below threshold")
+        # Minimum market cap check (very lenient)
+        min_cap = CONFIG['min_market_cap_cr'] * 10000000  # 1 cr = 10 million
+        if market_cap < min_cap and market_cap > 0:
+            print(f"⚠️ {symbol} market cap {market_cap/10000000:.1f} cr below threshold")
             return None
         
-        # Safe value extraction with defaults
-        def safe_get(key, default=0, multiplier=1):
-            value = info.get(key, default)
-            if value is None or value == 'N/A':
-                return default
-            try:
-                return float(value) * multiplier
-            except (TypeError, ValueError):
-                return default
-        
+        # Build comprehensive data dict
         fundamental_data = {
             'symbol': symbol.replace('.NS', ''),
-            'company_name': info.get('longName', info.get('shortName', symbol)),
+            'company_name': info.get('longName', info.get('shortName', symbol.replace('.NS', ''))),
             'sector': info.get('sector', 'Unknown'),
             'industry': info.get('industry', 'Unknown'),
-            'market_cap_cr': round(market_cap / 10000000, 2),
-            'current_price': safe_get('currentPrice'),
+            'market_cap_cr': round(market_cap / 10000000, 2) if market_cap > 0 else 0,
+            'current_price': safe_extract('currentPrice'),
             
             # Valuation metrics
-            'pe_ratio': safe_get('trailingPE'),
-            'forward_pe': safe_get('forwardPE'),
-            'pb_ratio': safe_get('priceToBook'),
-            'price_to_sales': safe_get('priceToSalesTrailing12Months'),
+            'pe_ratio': safe_extract('trailingPE'),
+            'forward_pe': safe_extract('forwardPE'),
+            'pb_ratio': safe_extract('priceToBook'),
+            'price_to_sales': safe_extract('priceToSalesTrailing12Months'),
+            'ev_to_ebitda': safe_extract('enterpriseToEbitda'),
             
-            # Profitability metrics  
-            'roe': safe_get('returnOnEquity', multiplier=100),
-            'roa': safe_get('returnOnAssets', multiplier=100),
-            'profit_margin': safe_get('profitMargins', multiplier=100),
-            'operating_margin': safe_get('operatingMargins', multiplier=100),
-            'gross_margin': safe_get('grossMargins', multiplier=100),
+            # Profitability metrics
+            'roe': safe_extract('returnOnEquity', multiplier=100),
+            'roa': safe_extract('returnOnAssets', multiplier=100),
+            'profit_margin': safe_extract('profitMargins', multiplier=100),
+            'operating_margin': safe_extract('operatingMargins', multiplier=100),
+            'gross_margin': safe_extract('grossMargins', multiplier=100),
             
             # Financial health
-            'debt_to_equity': safe_get('debtToEquity'),
-            'current_ratio': safe_get('currentRatio'),
-            'quick_ratio': safe_get('quickRatio'),
+            'debt_to_equity': safe_extract('debtToEquity'),
+            'current_ratio': safe_extract('currentRatio'),
+            'quick_ratio': safe_extract('quickRatio'),
+            'interest_coverage': safe_extract('interestCoverage'),
             
             # Growth metrics
-            'revenue_growth': safe_get('revenueGrowth', multiplier=100),
-            'earnings_growth': safe_get('earningsGrowth', multiplier=100),
+            'revenue_growth': safe_extract('revenueGrowth', multiplier=100),
+            'earnings_growth': safe_extract('earningsGrowth', multiplier=100),
             
             # Dividend info
-            'dividend_yield': safe_get('dividendYield', multiplier=100),
-            'payout_ratio': safe_get('payoutRatio', multiplier=100),
+            'dividend_yield': safe_extract('dividendYield', multiplier=100),
+            'payout_ratio': safe_extract('payoutRatio', multiplier=100),
             
             # Other metrics
-            'beta': safe_get('beta', default=1.0),
-            'eps': safe_get('trailingEps'),
-            'book_value': safe_get('bookValue'),
-            '52_week_high': safe_get('fiftyTwoWeekHigh'),
-            '52_week_low': safe_get('fiftyTwoWeekLow')
+            'beta': safe_extract('beta', default=1.0),
+            'eps': safe_extract('trailingEps'),
+            'book_value': safe_extract('bookValue'),
+            '52_week_high': safe_extract('fiftyTwoWeekHigh'),
+            '52_week_low': safe_extract('fiftyTwoWeekLow'),
+            
+            # Data quality indicators
+            'data_completeness': sum(1 for v in [
+                safe_extract('currentPrice'), safe_extract('trailingPE'), safe_extract('returnOnEquity')
+            ] if v != 0) / 3
         }
         
-        print(f"Successfully fetched data for {symbol}")
+        print(f"✅ Successfully extracted data for {symbol}")
         return fundamental_data
         
     except Exception as e:
-        print(f"Error fetching fundamentals for {symbol}: {e}")
+        print(f"❌ Error fetching fundamentals for {symbol}: {e}")
         return None
 
-def calculate_fundamental_score(data):
-    """Calculate fundamental score with improved logic"""
-    if not data:
-        return {'score': 0, 'grade': 'F', 'passed': False}
+# Simplified but Accurate Fundamental Scoring
+def calculate_fundamental_score_robust(data):
+    """Simplified but robust fundamental scoring"""
+    if not data or data.get('data_completeness', 0) < 0.3:
+        return {'score': 0, 'grade': 'F', 'passed': False, 'reason': 'Insufficient data'}
     
     try:
         score = 0
         max_score = 10
+        score_details = {}
         
-        # P/E Ratio Score (0-2 points)
+        # 1. Price Reasonableness (0-2.5 points)
         pe = data.get('pe_ratio', 0)
-        if 0 < pe < 12:
-            score += 2.0  # Very attractive
-        elif 12 <= pe < 18:
-            score += 1.5  # Good
-        elif 18 <= pe < 25:
-            score += 1.0  # Fair
-        elif 25 <= pe < 35:
-            score += 0.5  # Expensive
+        if pe > 0:
+            if pe < 10:
+                price_score = 2.5
+            elif pe < 15:
+                price_score = 2.0
+            elif pe < 20:
+                price_score = 1.5
+            elif pe < 30:
+                price_score = 1.0
+            elif pe < 50:
+                price_score = 0.5
+            else:
+                price_score = 0
+        else:
+            price_score = 1.0  # Neutral for missing data
         
-        # ROE Score (0-2 points)
+        score += price_score
+        score_details['price_valuation'] = price_score
+        
+        # 2. Profitability (0-2.5 points) 
         roe = data.get('roe', 0)
-        if roe > 25:
-            score += 2.0  # Excellent
-        elif roe > 18:
-            score += 1.5  # Very good
-        elif roe > 12:
-            score += 1.0  # Good
-        elif roe > 8:
-            score += 0.5  # Average
+        if roe > 0:
+            if roe > 20:
+                prof_score = 2.5
+            elif roe > 15:
+                prof_score = 2.0
+            elif roe > 12:
+                prof_score = 1.5
+            elif roe > 8:
+                prof_score = 1.0
+            elif roe > 5:
+                prof_score = 0.5
+            else:
+                prof_score = 0
+        else:
+            prof_score = 0
         
-        # Debt Management Score (0-1.5 points)
+        score += prof_score
+        score_details['profitability'] = prof_score
+        
+        # 3. Financial Health (0-2 points)
         debt_equity = data.get('debt_to_equity', 0)
-        if debt_equity < 0.3:
-            score += 1.5  # Very low debt
-        elif debt_equity < 0.7:
-            score += 1.0  # Low debt
-        elif debt_equity < 1.5:
-            score += 0.7  # Moderate debt
-        elif debt_equity < 3.0:
-            score += 0.3  # High debt
-        
-        # Profitability Score (0-2 points)
-        profit_margin = data.get('profit_margin', 0)
-        if profit_margin > 20:
-            score += 2.0
-        elif profit_margin > 15:
-            score += 1.5
-        elif profit_margin > 10:
-            score += 1.0
-        elif profit_margin > 5:
-            score += 0.5
-        
-        # Growth Score (0-1.5 points)
-        revenue_growth = data.get('revenue_growth', 0)
-        earnings_growth = data.get('earnings_growth', 0)
-        avg_growth = (revenue_growth + earnings_growth) / 2
-        
-        if avg_growth > 25:
-            score += 1.5
-        elif avg_growth > 15:
-            score += 1.0
-        elif avg_growth > 8:
-            score += 0.7
-        elif avg_growth > 0:
-            score += 0.3
-        
-        # Financial Stability Score (0-1 point)
         current_ratio = data.get('current_ratio', 0)
-        if current_ratio > 2:
-            score += 1.0
-        elif current_ratio > 1.5:
-            score += 0.7
-        elif current_ratio > 1:
-            score += 0.5
-        elif current_ratio > 0.8:
-            score += 0.2
         
-        # Calculate final score
+        health_score = 0
+        if debt_equity > 0:
+            if debt_equity < 0.5:
+                health_score += 1.0
+            elif debt_equity < 1.0:
+                health_score += 0.7
+            elif debt_equity < 2.0:
+                health_score += 0.3
+        else:
+            health_score += 0.5  # Neutral for missing data
+            
+        if current_ratio > 1.5:
+            health_score += 1.0
+        elif current_ratio > 1.0:
+            health_score += 0.7
+        elif current_ratio > 0.8:
+            health_score += 0.3
+        else:
+            health_score += 0.1
+            
+        score += min(health_score, 2.0)
+        score_details['financial_health'] = min(health_score, 2.0)
+        
+        # 4. Growth (0-2 points)
+        rev_growth = data.get('revenue_growth', 0)
+        earnings_growth = data.get('earnings_growth', 0)
+        
+        growth_score = 0
+        if rev_growth > 15:
+            growth_score += 1.0
+        elif rev_growth > 10:
+            growth_score += 0.7
+        elif rev_growth > 5:
+            growth_score += 0.4
+        elif rev_growth > 0:
+            growth_score += 0.2
+            
+        if earnings_growth > 15:
+            growth_score += 1.0
+        elif earnings_growth > 10:
+            growth_score += 0.7
+        elif earnings_growth > 5:
+            growth_score += 0.4
+        elif earnings_growth > 0:
+            growth_score += 0.2
+            
+        score += min(growth_score, 2.0)
+        score_details['growth'] = min(growth_score, 2.0)
+        
+        # 5. Market Presence (0-1 point) - Based on market cap
+        market_cap = data.get('market_cap_cr', 0)
+        if market_cap > 10000:  # > 10,000 cr
+            presence_score = 1.0
+        elif market_cap > 1000:  # > 1,000 cr
+            presence_score = 0.8
+        elif market_cap > 100:   # > 100 cr
+            presence_score = 0.6
+        elif market_cap > 10:    # > 10 cr
+            presence_score = 0.4
+        else:
+            presence_score = 0.2
+            
+        score += presence_score
+        score_details['market_presence'] = presence_score
+        
+        # Final score calculation
         final_score = min(score, max_score)
         
-        # Determine grade
-        if final_score >= 8.5:
+        # Grade assignment
+        if final_score >= 8.0:
             grade = 'A+'
-        elif final_score >= 7.5:
+        elif final_score >= 7.0:
             grade = 'A'
-        elif final_score >= 6.5:
+        elif final_score >= 6.0:
             grade = 'B+'
-        elif final_score >= 5.5:
+        elif final_score >= 5.0:
             grade = 'B'
-        elif final_score >= 4.5:
+        elif final_score >= 4.0:
             grade = 'C+'
-        elif final_score >= 3.5:
+        elif final_score >= 3.0:
             grade = 'C'
         else:
             grade = 'D'
@@ -273,163 +382,219 @@ def calculate_fundamental_score(data):
         return {
             'score': round(final_score, 1),
             'grade': grade,
-            'passed': final_score >= CONFIG['fundamental_score_threshold']
+            'passed': final_score >= CONFIG['fundamental_score_threshold'],
+            'score_details': score_details,
+            'reason': f"Score: {final_score:.1f}/10"
         }
         
     except Exception as e:
         print(f"Error calculating fundamental score: {e}")
-        return {'score': 0, 'grade': 'F', 'passed': False}
+        return {'score': 0, 'grade': 'F', 'passed': False, 'reason': f'Calculation error: {e}'}
 
-# Technical Analysis (same as before)
-def calculate_technical_score(symbol):
-    """Simple technical analysis"""
+# Robust Technical Analysis
+def calculate_technical_score_robust(symbol):
+    """Robust technical analysis with better error handling"""
     try:
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="6mo", interval="1d")
+        print(f"🔍 Technical analysis for {symbol}")
         
-        if data.empty or len(data) < 30:  # Reduced minimum requirement
+        ticker = yf.Ticker(symbol)
+        
+        # Try different periods if 6mo fails
+        for period in ["6mo", "3mo", "1mo"]:
+            try:
+                data = ticker.history(period=period, interval="1d")
+                if not data.empty and len(data) >= 20:
+                    break
+            except:
+                continue
+        else:
+            print(f"❌ No technical data for {symbol}")
             return None
         
         close = data['Close']
         volume = data['Volume']
+        high = data['High']
+        low = data['Low']
         
-        # Simple indicators
-        sma_20 = close.rolling(20).mean()
-        sma_50 = close.rolling(50).mean() if len(close) >= 50 else sma_20
-        
-        # RSI calculation
-        delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        current_price = close.iloc[-1]
-        current_rsi = rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
-        
-        # Technical score
-        tech_score = 0
-        
-        # Trend score (0-40 points)
-        if not pd.isna(sma_20.iloc[-1]) and current_price > sma_20.iloc[-1]:
-            tech_score += 20
-        if len(close) >= 50 and not pd.isna(sma_50.iloc[-1]) and current_price > sma_50.iloc[-1]:
-            tech_score += 20
-        
-        # RSI score (0-25 points)
-        if 45 <= current_rsi <= 55:
-            tech_score += 25  # Neutral zone
-        elif 35 <= current_rsi < 45 or 55 < current_rsi <= 65:
-            tech_score += 20  # Good momentum
-        elif 25 <= current_rsi < 35 or 65 < current_rsi <= 75:
-            tech_score += 15  # Strong momentum
-        
-        # Volume score (0-20 points)
-        avg_volume = volume.rolling(20).mean().iloc[-1]
-        if volume.iloc[-1] > avg_volume * 1.5:
-            tech_score += 20
-        elif volume.iloc[-1] > avg_volume:
-            tech_score += 15
-        else:
-            tech_score += 10
-        
-        # Price position score (0-15 points)
-        period_high = close.rolling(min(len(close), 252)).max().iloc[-1]
-        period_low = close.rolling(min(len(close), 252)).min().iloc[-1]
-        price_pos = (current_price - period_low) / (period_high - period_low) * 100
-        
-        if 60 <= price_pos <= 85:
-            tech_score += 15
-        elif 40 <= price_pos < 60:
-            tech_score += 10
-        elif price_pos >= 85:
-            tech_score += 8
-        else:
-            tech_score += 5
-        
-        # Determine recommendation
-        if tech_score >= 80:
-            recommendation = 'STRONG_BUY'
-        elif tech_score >= 65:
-            recommendation = 'BUY'
-        elif tech_score >= 50:
-            recommendation = 'HOLD'
-        elif tech_score >= 35:
-            recommendation = 'WEAK_HOLD'
-        else:
-            recommendation = 'AVOID'
-        
-        return {
-            'symbol': symbol.replace('.NS', ''),
-            'technical_score': tech_score,
-            'recommendation': recommendation,
-            'current_price': round(float(current_price), 2),
-            'rsi': round(current_rsi, 1),
-            'price_position': round(price_pos, 1),
-            'qualified': tech_score >= CONFIG['technical_score_threshold']
-        }
+        # Calculate indicators with error handling
+        try:
+            # Moving averages
+            sma_10 = close.rolling(10).mean()
+            sma_20 = close.rolling(20).mean() if len(close) >= 20 else sma_10
+            
+            # RSI
+            delta = close.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            current_price = close.iloc[-1]
+            current_rsi = rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
+            
+            # Technical scoring
+            tech_score = 0
+            
+            # Trend Score (0-40)
+            if not pd.isna(sma_10.iloc[-1]) and current_price > sma_10.iloc[-1]:
+                tech_score += 20
+            if len(close) >= 20 and not pd.isna(sma_20.iloc[-1]) and current_price > sma_20.iloc[-1]:
+                tech_score += 20
+            
+            # RSI Score (0-30)
+            if 30 <= current_rsi <= 70:
+                tech_score += 30
+            elif 25 <= current_rsi < 30 or 70 < current_rsi <= 75:
+                tech_score += 20
+            elif current_rsi < 25 or current_rsi > 75:
+                tech_score += 10
+            
+            # Volume Score (0-20)
+            if len(volume) >= 10:
+                avg_volume = volume.rolling(10).mean().iloc[-1]
+                if volume.iloc[-1] > avg_volume:
+                    tech_score += 20
+                else:
+                    tech_score += 10
+            else:
+                tech_score += 15
+            
+            # Price Position Score (0-10)
+            if len(close) >= 50:
+                high_period = high.rolling(50).max().iloc[-1]
+                low_period = low.rolling(50).min().iloc[-1]
+                if high_period != low_period:
+                    price_pos = (current_price - low_period) / (high_period - low_period) * 100
+                    if 40 <= price_pos <= 80:
+                        tech_score += 10
+                    elif 20 <= price_pos < 40 or 80 < price_pos <= 90:
+                        tech_score += 7
+                    else:
+                        tech_score += 5
+                else:
+                    tech_score += 5
+            else:
+                tech_score += 5
+            
+            # Determine recommendation
+            if tech_score >= 80:
+                recommendation = 'STRONG_BUY'
+            elif tech_score >= 65:
+                recommendation = 'BUY'
+            elif tech_score >= 45:
+                recommendation = 'HOLD'
+            elif tech_score >= 30:
+                recommendation = 'WEAK_HOLD'
+            else:
+                recommendation = 'AVOID'
+            
+            print(f"✅ Technical analysis complete for {symbol}: {tech_score}")
+            
+            return {
+                'symbol': symbol.replace('.NS', ''),
+                'technical_score': tech_score,
+                'recommendation': recommendation,
+                'current_price': round(float(current_price), 2),
+                'rsi': round(current_rsi, 1),
+                'qualified': tech_score >= CONFIG['technical_score_threshold']
+            }
+            
+        except Exception as e:
+            print(f"❌ Technical calculation error for {symbol}: {e}")
+            return None
+            
     except Exception as e:
-        print(f"Technical analysis error for {symbol}: {e}")
+        print(f"❌ Technical analysis error for {symbol}: {e}")
         return None
 
-# Main scanning function (same logic)
+# Enhanced Scanning Function
 def run_complete_scan():
-    """Two-stage scanning process"""
+    """Enhanced scanning with better debugging and error handling"""
     global scan_data
     
     scan_data['status'] = 'running'
     scan_data['stage'] = 'fundamental_filtering'
     scan_data['progress'] = 0
+    scan_data['debug_info'] = []
     
     try:
+        # Get symbols
         all_symbols = get_nse_symbols()
         scan_data['total_stocks'] = len(all_symbols)
+        scan_data['debug_info'].append(f"Starting scan of {len(all_symbols)} stocks")
         
+        # Stage 1: Fundamental filtering (scan first 50 stocks for performance)
         fundamental_stocks = []
+        scan_limit = min(50, len(all_symbols))  # Limit for performance
         
-        for i, symbol in enumerate(all_symbols[:80]):  # Scan more stocks
+        for i, symbol in enumerate(all_symbols[:scan_limit]):
             try:
-                scan_data['progress'] = int((i / 80) * 50)
+                scan_data['progress'] = int((i / scan_limit) * 50)
+                print(f"\n🔄 Processing {i+1}/{scan_limit}: {symbol}")
                 
-                fund_data = get_fundamental_data(symbol)
+                # Get fundamental data
+                fund_data = get_fundamental_data_robust(symbol)
                 if fund_data:
-                    fund_score = calculate_fundamental_score(fund_data)
+                    fund_score = calculate_fundamental_score_robust(fund_data)
                     combined = {**fund_data, **fund_score}
                     
-                    if fund_score['passed']:
+                    if fund_score.get('passed', False):
                         fundamental_stocks.append(combined)
+                        scan_data['debug_info'].append(f"✅ {symbol} passed fundamental filter")
+                        print(f"✅ {symbol} PASSED fundamental: {fund_score['score']}/10")
+                    else:
+                        scan_data['debug_info'].append(f"❌ {symbol} failed fundamental: {fund_score.get('reason', 'Unknown')}")
+                        print(f"❌ {symbol} failed fundamental: {fund_score.get('reason', 'Low score')}")
+                else:
+                    scan_data['debug_info'].append(f"❌ {symbol} no fundamental data")
+                    print(f"❌ {symbol} no fundamental data available")
                 
             except Exception as e:
-                print(f"Error processing {symbol}: {e}")
+                error_msg = f"Error processing {symbol}: {e}"
+                scan_data['debug_info'].append(error_msg)
+                print(f"❌ {error_msg}")
                 continue
         
         scan_data['fundamental_passed'] = len(fundamental_stocks)
         scan_data['fundamental_results'] = fundamental_stocks
+        scan_data['debug_info'].append(f"Stage 1 complete: {len(fundamental_stocks)} stocks passed fundamental filter")
         
-        # Technical analysis stage
+        # Stage 2: Technical analysis
         scan_data['stage'] = 'technical_analysis'
         final_stocks = []
         
-        for i, fund_stock in enumerate(fundamental_stocks):
-            try:
-                scan_data['progress'] = 50 + int((i / len(fundamental_stocks)) * 50)
-                
-                symbol = f"{fund_stock['symbol']}.NS"
-                tech_result = calculate_technical_score(symbol)
-                
-                if tech_result and tech_result['qualified']:
-                    combined = {
-                        **fund_stock,
-                        **tech_result,
-                        'final_score': round((fund_stock['score'] * 10 + tech_result['technical_score']) / 2, 1)
-                    }
-                    final_stocks.append(combined)
+        if fundamental_stocks:
+            for i, fund_stock in enumerate(fundamental_stocks):
+                try:
+                    scan_data['progress'] = 50 + int((i / len(fundamental_stocks)) * 50)
                     
-            except Exception as e:
-                print(f"Technical analysis error: {e}")
-                continue
+                    symbol = f"{fund_stock['symbol']}.NS"
+                    print(f"\n🔄 Technical analysis {i+1}/{len(fundamental_stocks)}: {symbol}")
+                    
+                    tech_result = calculate_technical_score_robust(symbol)
+                    
+                    if tech_result and tech_result.get('qualified', False):
+                        combined = {
+                            **fund_stock,
+                            **tech_result,
+                            'final_score': round((fund_stock['score'] * 10 + tech_result['technical_score']) / 2, 1)
+                        }
+                        final_stocks.append(combined)
+                        scan_data['debug_info'].append(f"✅ {symbol} passed both filters")
+                        print(f"✅ {symbol} PASSED both filters")
+                    else:
+                        tech_score = tech_result.get('technical_score', 0) if tech_result else 0
+                        scan_data['debug_info'].append(f"❌ {symbol} failed technical filter: {tech_score}")
+                        print(f"❌ {symbol} failed technical: {tech_score}")
+                        
+                except Exception as e:
+                    error_msg = f"Technical analysis error for {fund_stock['symbol']}: {e}"
+                    scan_data['debug_info'].append(error_msg)
+                    print(f"❌ {error_msg}")
+                    continue
         
-        final_stocks.sort(key=lambda x: x['final_score'], reverse=True)
+        # Sort by final score
+        final_stocks.sort(key=lambda x: x.get('final_score', 0), reverse=True)
         
         scan_data['technical_qualified'] = len(final_stocks)
         scan_data['final_results'] = final_stocks
@@ -437,22 +602,40 @@ def run_complete_scan():
         scan_data['stage'] = 'completed'
         scan_data['progress'] = 100
         scan_data['last_update'] = datetime.now().isoformat()
+        scan_data['debug_info'].append(f"Scan complete: {len(final_stocks)} stocks qualified both filters")
         
-        print(f"Scan complete: {len(final_stocks)} stocks qualified")
+        print(f"\n🎉 SCAN COMPLETE!")
+        print(f"📊 Total scanned: {scan_limit}")
+        print(f"✅ Fundamental passed: {len(fundamental_stocks)}")
+        print(f"🎯 Final qualified: {len(final_stocks)}")
         
     except Exception as e:
-        print(f"Scan error: {e}")
+        error_msg = f"Scan error: {e}"
+        scan_data['debug_info'].append(error_msg)
         scan_data['status'] = 'error'
+        print(f"❌ {error_msg}")
 
 # API Endpoints
 @app.get("/health")
 def health():
-    return JSONResponse({"status": "ok", "version": "3.0"})
+    return JSONResponse({"status": "ok", "version": "4.0 ROBUST"})
 
 @app.post("/start-scan")
 def start_scan(background_tasks: BackgroundTasks):
     if scan_data["status"] == "running":
         return JSONResponse({"status": "already_running"}, status_code=202)
+    
+    # Reset data
+    scan_data.update({
+        "status": "idle",
+        "stage": "ready", 
+        "progress": 0,
+        "fundamental_passed": 0,
+        "technical_qualified": 0,
+        "fundamental_results": [],
+        "final_results": [],
+        "debug_info": []
+    })
     
     background_tasks.add_task(run_complete_scan)
     return JSONResponse({"status": "scan_started"}, status_code=202)
@@ -460,6 +643,10 @@ def start_scan(background_tasks: BackgroundTasks):
 @app.get("/scan-status")
 def get_scan_status():
     return JSONResponse(scan_data)
+
+@app.get("/debug")
+def get_debug_info():
+    return JSONResponse({"debug_info": scan_data.get('debug_info', [])})
 
 @app.get("/results")
 def get_results():
@@ -470,26 +657,23 @@ def get_results():
 
 @app.get("/analyze/{symbol}")
 def analyze_stock(symbol: str):
-    """Fixed individual stock analysis"""
+    """ROBUST individual stock analysis"""
     try:
-        # Ensure proper symbol format
         if not symbol.endswith('.NS'):
             symbol += '.NS'
         
-        print(f"Analyzing {symbol}")
+        print(f"\n🔍 ANALYZING {symbol}")
         
-        # Get fundamental data with detailed error handling
-        fund_data = get_fundamental_data(symbol)
+        # Get fundamental data
+        fund_data = get_fundamental_data_robust(symbol)
         if not fund_data:
             return JSONResponse({
-                "error": f"No fundamental data available for {symbol}. This could be due to: 1) Symbol not found, 2) Market cap below ₹{CONFIG['min_market_cap_cr']} cr, 3) Data source unavailable"
+                "error": f"Could not fetch fundamental data for {symbol}. This might be due to: 1) Invalid symbol, 2) Data source issues, 3) Very small market cap. Try symbols like RELIANCE, TCS, HDFCBANK."
             }, status_code=404)
         
-        # Calculate fundamental score
-        fund_score = calculate_fundamental_score(fund_data)
-        
-        # Get technical analysis if possible
-        tech_result = calculate_technical_score(symbol)
+        # Calculate scores
+        fund_score = calculate_fundamental_score_robust(fund_data)
+        tech_result = calculate_technical_score_robust(symbol)
         
         # Combine results
         result = {**fund_data, **fund_score}
@@ -502,13 +686,12 @@ def analyze_stock(symbol: str):
             result['recommendation'] = 'NO_TECHNICAL_DATA'
             result['final_score'] = fund_score['score'] * 10
         
-        print(f"Analysis complete for {symbol}")
+        print(f"✅ Analysis complete for {symbol}")
         return JSONResponse(result)
         
     except Exception as e:
-        print(f"Analysis error for {symbol}: {str(e)}")
         return JSONResponse({
-            "error": f"Analysis failed for {symbol}: {str(e)}"
+            "error": f"Analysis failed for {symbol}: {str(e)}. Please try a different symbol or check if the stock is listed on NSE."
         }, status_code=500)
 
 @app.get("/", response_class=HTMLResponse)
@@ -519,7 +702,7 @@ def homepage():
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Stock Scanner Pro</title>
+    <title>Stock Scanner Pro - ROBUST</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -579,6 +762,19 @@ def homepage():
         .header .description {
             color: var(--gray-500);
             font-size: 0.975rem;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+            background-color: var(--success);
+            color: white;
+            margin-top: 0.5rem;
         }
 
         /* Controls */
@@ -918,6 +1114,28 @@ def homepage():
             font-weight: 600;
         }
 
+        /* Debug Section */
+        .debug-section {
+            background-color: var(--gray-100);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-top: 1rem;
+            font-size: 0.8125rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .debug-section h3 {
+            color: var(--gray-700);
+            margin-bottom: 0.5rem;
+        }
+
+        .debug-section pre {
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: var(--gray-600);
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .container { padding: 0 1rem; }
@@ -938,7 +1156,8 @@ def homepage():
         <div class="container">
             <h1>Stock Scanner Pro</h1>
             <p class="subtitle">Two-Stage Analysis: Fundamental Quality + Technical Timing</p>
-            <p class="description">Market Cap > ₹10 Cr • Quality Score > 5/10 • Technical Score > 50/100</p>
+            <p class="description">Market Cap > ₹1 Cr • Quality Score > 3/10 • Technical Score > 30/100</p>
+            <span class="status-badge">ROBUST VERSION 4.0</span>
         </div>
     </div>
 
@@ -952,6 +1171,9 @@ def homepage():
             </button>
             <button class="btn btn-secondary" onclick="showTab('fundamental')">
                 Fundamental Results
+            </button>
+            <button class="btn btn-secondary" onclick="showDebug()">
+                Show Debug Info
             </button>
         </div>
         
@@ -1012,7 +1234,7 @@ def homepage():
                         type="text" 
                         id="stock-symbol" 
                         class="form-input" 
-                        placeholder="Enter stock symbol (e.g., RELIANCE)"
+                        placeholder="Try: RELIANCE, TCS, HDFCBANK, INFY"
                         onkeypress="if(event.key==='Enter') analyzeStock()"
                     >
                     <button class="btn btn-primary" onclick="analyzeStock()">Analyze Stock</button>
@@ -1021,9 +1243,15 @@ def homepage():
                     <div class="empty-state">
                         <div class="empty-icon">🔍</div>
                         <p>Enter a stock symbol to get detailed fundamental and technical analysis</p>
+                        <p style="margin-top: 0.5rem; font-size: 0.875rem;">Try: RELIANCE, TCS, HDFCBANK, INFY, MARUTI</p>
                     </div>
                 </div>
             </div>
+        </div>
+
+        <div id="debug-info" class="debug-section" style="display: none;">
+            <h3>Debug Information</h3>
+            <pre id="debug-content">No debug info available</pre>
         </div>
     </div>
 
@@ -1110,6 +1338,21 @@ def homepage():
             }
         }
 
+        async function showDebug() {
+            try {
+                const response = await fetch('/debug');
+                const data = await response.json();
+                
+                const debugSection = document.getElementById('debug-info');
+                const debugContent = document.getElementById('debug-content');
+                
+                debugContent.textContent = data.debug_info.join('\\n');
+                debugSection.style.display = debugSection.style.display === 'none' ? 'block' : 'none';
+            } catch (error) {
+                console.error('Error loading debug info:', error);
+            }
+        }
+
         function displayFinalResults(stocks) {
             const content = document.getElementById('final-content');
             
@@ -1118,6 +1361,7 @@ def homepage():
                     <div class="empty-state">
                         <div class="empty-icon">📊</div>
                         <p>No stocks qualified both filters</p>
+                        <p style="margin-top: 0.5rem; font-size: 0.875rem;">Try running a scan or check debug info</p>
                     </div>
                 `;
                 return;
@@ -1175,6 +1419,7 @@ def homepage():
                     <div class="empty-state">
                         <div class="empty-icon">📈</div>
                         <p>No fundamental results available</p>
+                        <p style="margin-top: 0.5rem; font-size: 0.875rem;">Try running a scan or check debug info</p>
                     </div>
                 `;
                 return;
@@ -1299,6 +1544,7 @@ def homepage():
                             <tr><td class="metric-label">Debt/Equity</td><td class="metric-value">${(data.debt_to_equity || 0).toFixed(2)}</td></tr>
                             <tr><td class="metric-label">Revenue Growth</td><td class="metric-value">${(data.revenue_growth || 0).toFixed(1)}%</td></tr>
                             <tr><td class="metric-label">Profit Margin</td><td class="metric-value">${(data.profit_margin || 0).toFixed(1)}%</td></tr>
+                            <tr><td class="metric-label">Data Quality</td><td class="metric-value">${((data.data_completeness || 0) * 100).toFixed(0)}%</td></tr>
             `;
             
             if (data.rsi) {
