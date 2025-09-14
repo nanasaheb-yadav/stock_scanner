@@ -1,3 +1,5 @@
+# app.py - Minimalist Design + Fixed Stock Analysis
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -5,71 +7,53 @@ import requests
 from datetime import datetime, timedelta
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
-from typing import Dict, List, Optional, Tuple
 import asyncio
 import warnings
 warnings.filterwarnings('ignore')
 
-app = FastAPI(title="Complete Stock Scanner - Fundamental + Technical Analysis")
+app = FastAPI(title="Stock Scanner Pro")
 
-# Global configuration
+# Configuration
 CONFIG = {
-    'min_market_cap_cr': 50,  # Minimum 50 crores market cap
-    'fundamental_score_threshold': 6,  # Out of 10
-    'technical_score_threshold': 60,  # Out of 100
-    'max_stocks_to_analyze': 600,
-    'risk_free_rate': 0.06
+    'min_market_cap_cr': 10,  # Reduced to 10 cr for broader coverage
+    'fundamental_score_threshold': 5,  # Slightly relaxed threshold
+    'technical_score_threshold': 50
 }
 
-# Global scan storage
+# Global storage
 scan_data = {
     "status": "idle",
-    "stage": "ready",  # ready, fundamental_filtering, technical_analysis, completed
+    "stage": "ready",
     "progress": 0,
     "total_stocks": 0,
     "fundamental_passed": 0,
     "technical_qualified": 0,
     "fundamental_results": [],
     "final_results": [],
-    "last_update": None,
-    "market_regime": "UNKNOWN"
+    "last_update": None
 }
 
-# ==================== NSE STOCK FETCHER ====================
-
-def get_all_nse_symbols():
-    """Fetch all NSE symbols with fallback to comprehensive list"""
+# NSE Stock Universe
+def get_nse_symbols():
+    """Get NSE symbols with fallback"""
     symbols = set()
     
-    # Method 1: Try NSE API
+    # Try NSE API first
     try:
         url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=15)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
             for stock in data.get('data', []):
                 if stock.get('symbol'):
                     symbols.add(f"{stock['symbol']}.NS")
-            print(f"Fetched {len(symbols)} symbols from NSE API")
+        print(f"Fetched {len(symbols)} from NSE API")
     except Exception as e:
         print(f"NSE API failed: {e}")
     
-    # Method 2: Try alternative sources
-    try:
-        # Get Nifty 100, 200, 500 indices
-        indices = ["^NSEI", "^CNXIT", "^NSEBANK"]  # Add more as needed
-        for index in indices:
-            ticker = yf.Ticker(index)
-            # This is a simplified approach - in reality you'd need more comprehensive fetching
-    except:
-        pass
-    
-    # Method 3: Comprehensive fallback list (Most liquid NSE stocks)
-    major_nse_stocks = [
-        # Nifty 50 Complete List
+    # Fallback list
+    fallback_stocks = [
         "RELIANCE.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "TCS.NS",
         "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "ASIANPAINT.NS",
         "MARUTI.NS", "BAJFINANCE.NS", "HCLTECH.NS", "AXISBANK.NS", "LT.NS",
@@ -80,8 +64,6 @@ def get_all_nse_symbols():
         "DRREDDY.NS", "SBILIFE.NS", "GRASIM.NS", "CIPLA.NS", "TATACONSUM.NS",
         "BRITANNIA.NS", "EICHERMOT.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "UPL.NS",
         "HINDALCO.NS", "BPCL.NS", "IOC.NS", "APOLLOHOSP.NS", "PIDILITIND.NS",
-        
-        # Next 100 - High Market Cap Stocks
         "ABB.NS", "ADANIENT.NS", "ADANIGREEN.NS", "AMBUJACEM.NS", "AUBANK.NS",
         "BANKBARODA.NS", "BERGEPAINT.NS", "BEL.NS", "BIOCON.NS", "BOSCHLTD.NS",
         "CANBK.NS", "CHOLAFIN.NS", "COLPAL.NS", "CONCOR.NS", "DABUR.NS",
@@ -92,460 +74,307 @@ def get_all_nse_symbols():
         "MPHASIS.NS", "MRF.NS", "NAUKRI.NS", "NMDC.NS", "OFSS.NS",
         "PAGEIND.NS", "PETRONET.NS", "PEL.NS", "PNB.NS", "PFC.NS",
         "RBLBANK.NS", "SAIL.NS", "SBICARD.NS", "SIEMENS.NS", "SRF.NS",
-        "3MINDIA.NS", "ACC.NS", "AIAENG.NS", "APLLTD.NS", "ALKEM.NS",
-        "AMARAJABAT.NS", "ASHOKLEY.NS", "ASTRAL.NS", "ATUL.NS", "BAJAJHLDNG.NS",
-        "BALKRISIND.NS", "BANDHANBNK.NS", "BATAINDIA.NS", "BHARATFORG.NS", "BHEL.NS",
-        "BLUESTARCO.NS", "CEATLTD.NS", "CHAMBLFERT.NS", "CHENNPETRO.NS", "CROMPTON.NS",
-        "CUMMINSIND.NS", "DEEPAKNITRITE.NS", "DIXON.NS", "EMAMILTD.NS", "ESCORTS.NS",
-        "EXIDEIND.NS", "FORTIS.NS", "GLENMARK.NS", "GNFC.NS", "GRANULES.NS",
-        "GUJGASLTD.NS", "HAL.NS", "HINDCOPPER.NS", "HINDZINC.NS", "HONAUT.NS",
-        "IDFCFIRSTB.NS", "IEX.NS", "IGL.NS", "INDHOTEL.NS", "INDIACEM.NS",
-        "INDIAMART.NS", "INOXLEISUR.NS", "IPCALAB.NS", "ISEC.NS", "JKCEMENT.NS",
-        "JSWENERGY.NS", "JUSTDIAL.NS", "KAJARIACER.NS", "KANSAINER.NS", "KTKBANK.NS",
-        "L&TFH.NS", "LALPATHLAB.NS", "LAURUSLABS.NS", "MANAPPURAM.NS", "MINDTREE.NS",
-        "MOTHERSUMI.NS", "MUTHOOTFIN.NS", "NATIONALUM.NS", "NCCLTD.NS", "NH.NS",
-        "NHPC.NS", "OBEROIRLTY.NS", "OIL.NS", "ORIENTBANK.NS", "PFIZER.NS",
-        "PIIND.NS", "POLYCAB.NS", "PRESTIGE.NS", "PNBHOUSING.NS", "QUESS.NS",
-        "RADICO.NS", "RAIN.NS", "RAMCOCEM.NS", "RPOWER.NS", "SANOFI.NS",
-        "SCHAEFFLER.NS", "SHREECEM.NS", "STARCEMENT.NS", "SUDARSCHEM.NS", "SYMPHONY.NS",
-        "THERMAX.NS", "THYROCARE.NS", "TIINDIA.NS", "TORNTPHARM.NS", "TORNTPOWER.NS",
-        "TRENT.NS", "TRIDENT.NS", "UCOBANK.NS", "UJJIVAN.NS", "UNIONBANK.NS",
-        "UNITECH.NS", "UBL.NS", "VEDL.NS", "VOLTAS.NS", "WABAG.NS",
-        "WELCORP.NS", "WHIRLPOOL.NS", "YESBANK.NS", "ZEEL.NS", "ZENSARTECH.NS",
-        
-        # Mid-cap stocks (Market cap 1000-10000 cr)
-        "360ONE.NS", "AARTIDRUGS.NS", "AAVAS.NS", "ABCAPITAL.NS", "ABFRL.NS",
-        "ABSLAMC.NS", "ADANIGAS.NS", "ADANIPOWER.NS", "AKZOINDIA.NS", "ANGELONE.NS",
-        "ANANTRAJ.NS", "APARINDS.NS", "APOLLOTYRE.NS", "ARVIND.NS", "ASTERDM.NS",
-        "AUROPHARMA.NS", "AVANTIFEED.NS", "BAJAJCON.NS", "BASF.NS", "BEML.NS",
-        "BHARTIHEXA.NS", "BIKAJI.NS", "BIRLAMONEY.NS", "BLUEDART.NS", "BRIGADE.NS",
-        "CANFINHOME.NS", "CAPLIPOINT.NS", "CARBORUNIV.NS", "CCL.NS", "CENTRALBK.NS",
-        "CENTURYPLY.NS", "CENTURYTEX.NS", "CESC.NS", "CGPOWER.NS", "CHALET.NS",
-        "CHEMPLASTS.NS", "CIPLA.NS", "CUB.NS", "COFORGE.NS", "COROMANDEL.NS",
-        "CREDITACC.NS", "CRISIL.NS", "CYIENT.NS", "DCMSHRIRAM.NS", "DELTACORP.NS",
-        "DHANUKA.NS", "DISHTV.NS", "EASEMYTRIP.NS", "EDELWEISS.NS", "ENDURANCE.NS",
-        "EQUITAS.NS", "ESABINDIA.NS", "FINEORG.NS", "FINCABLES.NS", "FINPIPE.NS",
-        "FSL.NS", "GALAXYSURF.NS", "GARFIBRES.NS", "GILLETTE.NS", "GLAND.NS",
-        "GLAXO.NS", "GPPL.NS", "GREENPANEL.NS", "GRINDWELL.NS", "GRSE.NS",
-        "GSHIP.NS", "GTLINFRA.NS", "GUJALKALI.NS", "GULFOILLUB.NS", "HCC.NS",
-        "HEIDELBERG.NS", "HERITGFOOD.NS", "HFCL.NS", "HGINFRA.NS", "HIMATSEIDE.NS",
-        "HLEGLAS.NS", "HSIL.NS", "IBREALEST.NS", "IDBI.NS", "IFBIND.NS",
-        "IIFL.NS", "INDOCO.NS", "INFIBEAM.NS", "INOXWIND.NS", "INTELLECT.NS",
-        "IOB.NS", "IRCON.NS", "ITI.NS", "J&KBANK.NS", "JBCHEPHARM.NS",
-        "JINDALSAW.NS", "JINDALSTEL.NS", "JKPAPER.NS", "JKTYRE.NS", "JMFINANCIL.NS",
-        "JSL.NS", "KALPATPOWR.NS", "KARURVYSYA.NS", "KEC.NS", "KEI.NS",
-        "KPRMILL.NS", "KRBL.NS", "LAXMIMACH.NS", "LINDEINDIA.NS", "LUXIND.NS",
-        "MAGMA.NS", "MAHINDCIE.NS", "MAHLOG.NS", "MANINFRA.NS", "MAXHEALTH.NS",
-        "MCDOWELL-N.NS", "MCX.NS", "MINDACORP.NS", "MOIL.NS", "NAVINFLUOR.NS",
-        "NESCO.NS", "NETWORK18.NS", "NEWGEN.NS", "NLCINDIA.NS", "NOCIL.NS",
-        "NRBBEARING.NS", "NUVOCO.NS", "OMAXE.NS", "ORIENTCEM.NS", "PANAMAPET.NS",
-        "PERSISTENT.NS", "PGHL.NS", "PHOENIXLTD.NS", "PNBGILTS.NS", "PNCINFRA.NS",
-        "POLYMED.NS", "PRSMJOHNSN.NS", "PSB.NS", "PTC.NS", "PVR.NS",
-        "RALLIS.NS", "RATNAMANI.NS", "RAYMOND.NS", "RECLTD.NS", "RELAXO.NS",
-        "RIIL.NS", "RITES.NS", "ROUTE.NS", "RUPA.NS", "SAGCEM.NS",
-        "SCI.NS", "SEQUENT.NS", "SFL.NS", "SHILPAMED.NS", "SHOPERSTOP.NS",
-        "SHYAMMETL.NS", "SOLARINDS.NS", "SONATSOFTW.NS", "SOUTHBANK.NS", "SPANDANA.NS",
-        "SPARC.NS", "SPICEJET.NS", "STLTECH.NS", "SUBEXLTD.NS", "SUNDARMFIN.NS",
-        "SUNDRMFAST.NS", "SUPRAJIT.NS", "SUVEN.NS", "SYNGENE.NS", "TEAMLEASE.NS",
-        "TEXRAIL.NS", "TGBHOTELS.NS", "THEMISMED.NS", "TIMKEN.NS", "TIPSMUSIC.NS",
-        "TTKPRESTIG.NS", "TV18BRDCST.NS", "UJJIVAN.NS", "VAKRANGEE.NS", "VARROC.NS",
-        "VBL.NS", "VGUARD.NS", "VINATIORGA.NS", "VIPIND.NS", "VMART.NS",
-        "WESTLIFE.NS", "WOCKPHARMA.NS"
+        "ZOMATO.NS", "PAYTM.NS", "NYKAA.NS", "POLICYBZR.NS"  # Added newer stocks
     ]
     
-    symbols.update(major_nse_stocks)
-    
-    # Return sorted list with duplicates removed
-    final_symbols = sorted(list(symbols))
-    print(f"Total NSE symbols loaded: {len(final_symbols)}")
-    return final_symbols
+    symbols.update(fallback_stocks)
+    return sorted(list(symbols))
 
-# ==================== FUNDAMENTAL ANALYSIS ENGINE ====================
-
-class FundamentalAnalyzer:
-    
-    @staticmethod
-    def get_fundamental_data(symbol: str) -> Dict[str, any]:
-        """Fetch comprehensive fundamental data for a stock"""
-        try:
-            ticker = yf.Ticker(symbol)
-            
-            # Get basic info
-            info = ticker.info
-            if not info or 'marketCap' not in info:
-                return None
-            
-            # Market cap filter (50 crores minimum)
-            market_cap = info.get('marketCap', 0)
-            if market_cap < (CONFIG['min_market_cap_cr'] * 10000000):  # 50 cr = 500 million
-                return None
-            
-            # Get financial statements
-            try:
-                financials = ticker.financials
-                balance_sheet = ticker.balance_sheet
-                cash_flow = ticker.cashflow
-            except:
-                financials = balance_sheet = cash_flow = pd.DataFrame()
-            
-            # Extract key fundamental metrics
-            fundamental_data = {
-                'symbol': symbol.replace('.NS', ''),
-                'company_name': info.get('longName', symbol),
-                'sector': info.get('sector', 'Unknown'),
-                'industry': info.get('industry', 'Unknown'),
-                'market_cap_cr': round(market_cap / 10000000, 2),  # Convert to crores
-                'current_price': info.get('currentPrice', 0),
-                
-                # Valuation Ratios
-                'pe_ratio': info.get('trailingPE', 0),
-                'forward_pe': info.get('forwardPE', 0),
-                'pb_ratio': info.get('priceToBook', 0),
-                'price_to_sales': info.get('priceToSalesTrailing12Months', 0),
-                'ev_to_ebitda': info.get('enterpriseToEbitda', 0),
-                
-                # Profitability Ratios
-                'roe': info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else 0,
-                'roa': info.get('returnOnAssets', 0) * 100 if info.get('returnOnAssets') else 0,
-                'profit_margin': info.get('profitMargins', 0) * 100 if info.get('profitMargins') else 0,
-                'operating_margin': info.get('operatingMargins', 0) * 100 if info.get('operatingMargins') else 0,
-                'gross_margin': info.get('grossMargins', 0) * 100 if info.get('grossMargins') else 0,
-                
-                # Financial Health
-                'debt_to_equity': info.get('debtToEquity', 0),
-                'current_ratio': info.get('currentRatio', 0),
-                'quick_ratio': info.get('quickRatio', 0),
-                'interest_coverage': info.get('interestCoverage', 0),
-                
-                # Growth Metrics
-                'revenue_growth': info.get('revenueGrowth', 0) * 100 if info.get('revenueGrowth') else 0,
-                'earnings_growth': info.get('earningsGrowth', 0) * 100 if info.get('earningsGrowth') else 0,
-                
-                # Dividend Information
-                'dividend_yield': info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0,
-                'payout_ratio': info.get('payoutRatio', 0) * 100 if info.get('payoutRatio') else 0,
-                
-                # Other Metrics
-                'book_value': info.get('bookValue', 0),
-                'eps': info.get('trailingEps', 0),
-                'beta': info.get('beta', 1.0),
-                '52_week_high': info.get('fiftyTwoWeekHigh', 0),
-                '52_week_low': info.get('fiftyTwoWeekLow', 0),
-            }
-            
-            return fundamental_data
-            
-        except Exception as e:
-            print(f"Error fetching fundamentals for {symbol}: {e}")
-            return None
-    
-    @staticmethod
-    def calculate_fundamental_score(fund_data: Dict[str, any]) -> Dict[str, any]:
-        """Calculate comprehensive fundamental score (0-10)"""
-        if not fund_data:
-            return {'score': 0, 'details': {}}
+# Fixed Fundamental Analysis
+def get_fundamental_data(symbol):
+    """Get comprehensive fundamental data with better error handling"""
+    try:
+        print(f"Fetching data for {symbol}")
+        ticker = yf.Ticker(symbol)
         
-        score_components = {}
-        total_score = 0
+        # Get info with timeout
+        try:
+            info = ticker.info
+        except Exception as e:
+            print(f"Error fetching info for {symbol}: {e}")
+            return None
+        
+        if not info:
+            print(f"No info data for {symbol}")
+            return None
+        
+        # Extract market cap with multiple fallbacks
+        market_cap = 0
+        if 'marketCap' in info and info['marketCap']:
+            market_cap = info['marketCap']
+        elif 'sharesOutstanding' in info and 'currentPrice' in info:
+            shares = info.get('sharesOutstanding', 0)
+            price = info.get('currentPrice', 0)
+            if shares and price:
+                market_cap = shares * price
+        
+        # Apply market cap filter (relaxed to 10 cr)
+        min_market_cap = CONFIG['min_market_cap_cr'] * 10000000  # 10 cr = 100 million
+        if market_cap < min_market_cap:
+            print(f"{symbol} market cap {market_cap/10000000:.1f} cr below threshold")
+            return None
+        
+        # Safe value extraction with defaults
+        def safe_get(key, default=0, multiplier=1):
+            value = info.get(key, default)
+            if value is None or value == 'N/A':
+                return default
+            try:
+                return float(value) * multiplier
+            except (TypeError, ValueError):
+                return default
+        
+        fundamental_data = {
+            'symbol': symbol.replace('.NS', ''),
+            'company_name': info.get('longName', info.get('shortName', symbol)),
+            'sector': info.get('sector', 'Unknown'),
+            'industry': info.get('industry', 'Unknown'),
+            'market_cap_cr': round(market_cap / 10000000, 2),
+            'current_price': safe_get('currentPrice'),
+            
+            # Valuation metrics
+            'pe_ratio': safe_get('trailingPE'),
+            'forward_pe': safe_get('forwardPE'),
+            'pb_ratio': safe_get('priceToBook'),
+            'price_to_sales': safe_get('priceToSalesTrailing12Months'),
+            
+            # Profitability metrics  
+            'roe': safe_get('returnOnEquity', multiplier=100),
+            'roa': safe_get('returnOnAssets', multiplier=100),
+            'profit_margin': safe_get('profitMargins', multiplier=100),
+            'operating_margin': safe_get('operatingMargins', multiplier=100),
+            'gross_margin': safe_get('grossMargins', multiplier=100),
+            
+            # Financial health
+            'debt_to_equity': safe_get('debtToEquity'),
+            'current_ratio': safe_get('currentRatio'),
+            'quick_ratio': safe_get('quickRatio'),
+            
+            # Growth metrics
+            'revenue_growth': safe_get('revenueGrowth', multiplier=100),
+            'earnings_growth': safe_get('earningsGrowth', multiplier=100),
+            
+            # Dividend info
+            'dividend_yield': safe_get('dividendYield', multiplier=100),
+            'payout_ratio': safe_get('payoutRatio', multiplier=100),
+            
+            # Other metrics
+            'beta': safe_get('beta', default=1.0),
+            'eps': safe_get('trailingEps'),
+            'book_value': safe_get('bookValue'),
+            '52_week_high': safe_get('fiftyTwoWeekHigh'),
+            '52_week_low': safe_get('fiftyTwoWeekLow')
+        }
+        
+        print(f"Successfully fetched data for {symbol}")
+        return fundamental_data
+        
+    except Exception as e:
+        print(f"Error fetching fundamentals for {symbol}: {e}")
+        return None
+
+def calculate_fundamental_score(data):
+    """Calculate fundamental score with improved logic"""
+    if not data:
+        return {'score': 0, 'grade': 'F', 'passed': False}
+    
+    try:
+        score = 0
         max_score = 10
         
-        try:
-            # 1. Valuation Score (0-2 points)
-            valuation_score = 0
-            pe_ratio = fund_data.get('pe_ratio', 0)
-            pb_ratio = fund_data.get('pb_ratio', 0)
-            
-            # P/E Score
-            if 0 < pe_ratio < 15:
-                valuation_score += 1.0  # Undervalued
-            elif 15 <= pe_ratio < 25:
-                valuation_score += 0.7  # Fair value
-            elif 25 <= pe_ratio < 35:
-                valuation_score += 0.3  # Overvalued
-            
-            # P/B Score
-            if 0 < pb_ratio < 1.5:
-                valuation_score += 1.0  # Undervalued
-            elif 1.5 <= pb_ratio < 3:
-                valuation_score += 0.5  # Fair value
-            
-            score_components['valuation'] = min(2.0, valuation_score)
-            
-            # 2. Profitability Score (0-2.5 points)
-            profitability_score = 0
-            roe = fund_data.get('roe', 0)
-            roa = fund_data.get('roa', 0)
-            profit_margin = fund_data.get('profit_margin', 0)
-            
-            # ROE Score
-            if roe > 20:
-                profitability_score += 1.0  # Excellent
-            elif roe > 15:
-                profitability_score += 0.8  # Good
-            elif roe > 10:
-                profitability_score += 0.5  # Average
-            
-            # ROA Score
-            if roa > 10:
-                profitability_score += 0.8
-            elif roa > 5:
-                profitability_score += 0.5
-            
-            # Profit Margin Score
-            if profit_margin > 15:
-                profitability_score += 0.7
-            elif profit_margin > 10:
-                profitability_score += 0.4
-            elif profit_margin > 5:
-                profitability_score += 0.2
-            
-            score_components['profitability'] = min(2.5, profitability_score)
-            
-            # 3. Financial Health Score (0-2 points)
-            health_score = 0
-            debt_equity = fund_data.get('debt_to_equity', 0)
-            current_ratio = fund_data.get('current_ratio', 0)
-            
-            # Debt-to-Equity Score
-            if debt_equity < 0.5:
-                health_score += 1.0  # Low debt
-            elif debt_equity < 1.0:
-                health_score += 0.7  # Moderate debt
-            elif debt_equity < 2.0:
-                health_score += 0.3  # High debt
-            
-            # Current Ratio Score
-            if current_ratio > 1.5:
-                health_score += 1.0  # Good liquidity
-            elif current_ratio > 1.0:
-                health_score += 0.7  # Adequate liquidity
-            elif current_ratio > 0.8:
-                health_score += 0.3  # Tight liquidity
-            
-            score_components['financial_health'] = min(2.0, health_score)
-            
-            # 4. Growth Score (0-2 points)
-            growth_score = 0
-            revenue_growth = fund_data.get('revenue_growth', 0)
-            earnings_growth = fund_data.get('earnings_growth', 0)
-            
-            # Revenue Growth Score
-            if revenue_growth > 20:
-                growth_score += 1.0  # High growth
-            elif revenue_growth > 10:
-                growth_score += 0.7  # Good growth
-            elif revenue_growth > 5:
-                growth_score += 0.4  # Moderate growth
-            elif revenue_growth > 0:
-                growth_score += 0.2  # Positive growth
-            
-            # Earnings Growth Score
-            if earnings_growth > 25:
-                growth_score += 1.0
-            elif earnings_growth > 15:
-                growth_score += 0.7
-            elif earnings_growth > 5:
-                growth_score += 0.4
-            elif earnings_growth > 0:
-                growth_score += 0.2
-            
-            score_components['growth'] = min(2.0, growth_score)
-            
-            # 5. Dividend & Management Score (0-1.5 points)
-            dividend_score = 0
-            dividend_yield = fund_data.get('dividend_yield', 0)
-            payout_ratio = fund_data.get('payout_ratio', 0)
-            
-            # Dividend Yield Score
-            if 2 <= dividend_yield <= 6:
-                dividend_score += 0.8  # Healthy dividend
-            elif 1 <= dividend_yield < 2:
-                dividend_score += 0.5  # Moderate dividend
-            elif dividend_yield > 6:
-                dividend_score += 0.3  # High dividend (might be unsustainable)
-            
-            # Payout Ratio Score
-            if 20 <= payout_ratio <= 60:
-                dividend_score += 0.7  # Sustainable payout
-            elif 10 <= payout_ratio < 20 or 60 < payout_ratio <= 80:
-                dividend_score += 0.4  # Acceptable payout
-            
-            score_components['dividend_management'] = min(1.5, dividend_score)
-            
-            # Calculate total score
-            total_score = sum(score_components.values())
-            
-            # Determine grade
-            if total_score >= 8.5:
-                grade = 'A+'
-                quality = 'EXCELLENT'
-            elif total_score >= 7.5:
-                grade = 'A'
-                quality = 'VERY_GOOD'
-            elif total_score >= 6.5:
-                grade = 'B+'
-                quality = 'GOOD'
-            elif total_score >= 5.5:
-                grade = 'B'
-                quality = 'ABOVE_AVERAGE'
-            elif total_score >= 4.5:
-                grade = 'C+'
-                quality = 'AVERAGE'
-            elif total_score >= 3.5:
-                grade = 'C'
-                quality = 'BELOW_AVERAGE'
-            else:
-                grade = 'D'
-                quality = 'POOR'
-            
-            return {
-                'total_score': round(total_score, 2),
-                'max_score': max_score,
-                'grade': grade,
-                'quality': quality,
-                'score_components': score_components,
-                'passed_filter': total_score >= CONFIG['fundamental_score_threshold']
-            }
-            
-        except Exception as e:
-            print(f"Error calculating fundamental score: {e}")
-            return {'total_score': 0, 'passed_filter': False}
+        # P/E Ratio Score (0-2 points)
+        pe = data.get('pe_ratio', 0)
+        if 0 < pe < 12:
+            score += 2.0  # Very attractive
+        elif 12 <= pe < 18:
+            score += 1.5  # Good
+        elif 18 <= pe < 25:
+            score += 1.0  # Fair
+        elif 25 <= pe < 35:
+            score += 0.5  # Expensive
+        
+        # ROE Score (0-2 points)
+        roe = data.get('roe', 0)
+        if roe > 25:
+            score += 2.0  # Excellent
+        elif roe > 18:
+            score += 1.5  # Very good
+        elif roe > 12:
+            score += 1.0  # Good
+        elif roe > 8:
+            score += 0.5  # Average
+        
+        # Debt Management Score (0-1.5 points)
+        debt_equity = data.get('debt_to_equity', 0)
+        if debt_equity < 0.3:
+            score += 1.5  # Very low debt
+        elif debt_equity < 0.7:
+            score += 1.0  # Low debt
+        elif debt_equity < 1.5:
+            score += 0.7  # Moderate debt
+        elif debt_equity < 3.0:
+            score += 0.3  # High debt
+        
+        # Profitability Score (0-2 points)
+        profit_margin = data.get('profit_margin', 0)
+        if profit_margin > 20:
+            score += 2.0
+        elif profit_margin > 15:
+            score += 1.5
+        elif profit_margin > 10:
+            score += 1.0
+        elif profit_margin > 5:
+            score += 0.5
+        
+        # Growth Score (0-1.5 points)
+        revenue_growth = data.get('revenue_growth', 0)
+        earnings_growth = data.get('earnings_growth', 0)
+        avg_growth = (revenue_growth + earnings_growth) / 2
+        
+        if avg_growth > 25:
+            score += 1.5
+        elif avg_growth > 15:
+            score += 1.0
+        elif avg_growth > 8:
+            score += 0.7
+        elif avg_growth > 0:
+            score += 0.3
+        
+        # Financial Stability Score (0-1 point)
+        current_ratio = data.get('current_ratio', 0)
+        if current_ratio > 2:
+            score += 1.0
+        elif current_ratio > 1.5:
+            score += 0.7
+        elif current_ratio > 1:
+            score += 0.5
+        elif current_ratio > 0.8:
+            score += 0.2
+        
+        # Calculate final score
+        final_score = min(score, max_score)
+        
+        # Determine grade
+        if final_score >= 8.5:
+            grade = 'A+'
+        elif final_score >= 7.5:
+            grade = 'A'
+        elif final_score >= 6.5:
+            grade = 'B+'
+        elif final_score >= 5.5:
+            grade = 'B'
+        elif final_score >= 4.5:
+            grade = 'C+'
+        elif final_score >= 3.5:
+            grade = 'C'
+        else:
+            grade = 'D'
+        
+        return {
+            'score': round(final_score, 1),
+            'grade': grade,
+            'passed': final_score >= CONFIG['fundamental_score_threshold']
+        }
+        
+    except Exception as e:
+        print(f"Error calculating fundamental score: {e}")
+        return {'score': 0, 'grade': 'F', 'passed': False}
 
-# ==================== TECHNICAL ANALYSIS (Simplified Version) ====================
-
-class TechnicalAnalyzer:
-    
-    @staticmethod
-    def calculate_technical_score(symbol: str) -> Dict[str, any]:
-        """Calculate technical analysis score for fundamentally sound stocks"""
-        try:
-            # Get weekly data
-            ticker = yf.Ticker(symbol)
-            weekly_data = ticker.history(period="1y", interval="1wk")
-            
-            if weekly_data.empty or len(weekly_data) < 20:
-                return None
-            
-            close = weekly_data['Close']
-            high = weekly_data['High']
-            low = weekly_data['Low']
-            volume = weekly_data['Volume']
-            
-            # Technical indicators
-            sma_20 = close.rolling(20).mean()
-            sma_50 = close.rolling(50).mean() if len(close) >= 50 else sma_20
-            rsi = TechnicalAnalyzer.calculate_rsi(close, 14)
-            macd, signal = TechnicalAnalyzer.calculate_macd(close)
-            
-            current_price = close.iloc[-1]
-            
-            # Score components (0-100)
-            technical_score = 0
-            max_technical_score = 100
-            
-            # 1. Trend Score (0-30 points)
-            trend_score = 0
-            if not pd.isna(sma_20.iloc[-1]) and current_price > sma_20.iloc[-1]:
-                trend_score += 15  # Above 20-day SMA
-            if not pd.isna(sma_50.iloc[-1]) and current_price > sma_50.iloc[-1]:
-                trend_score += 15  # Above 50-day SMA
-            
-            # 2. Momentum Score (0-25 points)
-            momentum_score = 0
-            if not pd.isna(rsi.iloc[-1]):
-                rsi_val = rsi.iloc[-1]
-                if 40 <= rsi_val <= 60:
-                    momentum_score += 15  # Neutral momentum
-                elif 60 < rsi_val <= 70:
-                    momentum_score += 25  # Strong positive momentum
-                elif 30 <= rsi_val < 40:
-                    momentum_score += 10  # Oversold recovery
-            
-            # 3. MACD Score (0-20 points)
-            macd_score = 0
-            if not pd.isna(macd.iloc[-1]) and not pd.isna(signal.iloc[-1]):
-                if macd.iloc[-1] > signal.iloc[-1]:
-                    macd_score += 20  # Bullish MACD
-                else:
-                    macd_score += 5   # Bearish MACD
-            
-            # 4. Volume Score (0-15 points)
-            volume_score = 0
-            avg_volume = volume.rolling(20).mean().iloc[-1]
-            if volume.iloc[-1] > avg_volume * 1.2:
-                volume_score += 15  # High volume confirmation
-            elif volume.iloc[-1] > avg_volume:
-                volume_score += 10  # Above average volume
-            else:
-                volume_score += 5   # Normal volume
-            
-            # 5. Price Position Score (0-10 points)
-            price_score = 0
-            week_high = high.rolling(52).max().iloc[-1]
-            week_low = low.rolling(52).min().iloc[-1]
-            price_position = (current_price - week_low) / (week_high - week_low) * 100
-            
-            if 70 <= price_position <= 90:
-                price_score += 10  # Near highs but not overextended
-            elif 50 <= price_position < 70:
-                price_score += 8   # Upper half of range
-            elif 30 <= price_position < 50:
-                price_score += 5   # Middle range
-            else:
-                price_score += 3   # Lower range
-            
-            technical_score = trend_score + momentum_score + macd_score + volume_score + price_score
-            
-            # Determine recommendation
-            if technical_score >= 85:
-                recommendation = 'STRONG_BUY'
-            elif technical_score >= 70:
-                recommendation = 'BUY'
-            elif technical_score >= 55:
-                recommendation = 'HOLD'
-            elif technical_score >= 40:
-                recommendation = 'WEAK_HOLD'
-            else:
-                recommendation = 'AVOID'
-            
-            return {
-                'symbol': symbol.replace('.NS', ''),
-                'technical_score': technical_score,
-                'recommendation': recommendation,
-                'current_price': round(float(current_price), 2),
-                'rsi': round(rsi.iloc[-1], 2) if not pd.isna(rsi.iloc[-1]) else 0,
-                'price_position_52w': round(price_position, 1),
-                'volume_surge': volume.iloc[-1] > avg_volume * 1.2,
-                'qualified': technical_score >= CONFIG['technical_score_threshold']
-            }
-            
-        except Exception as e:
-            print(f"Error in technical analysis for {symbol}: {e}")
+# Technical Analysis (same as before)
+def calculate_technical_score(symbol):
+    """Simple technical analysis"""
+    try:
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period="6mo", interval="1d")
+        
+        if data.empty or len(data) < 30:  # Reduced minimum requirement
             return None
-    
-    @staticmethod
-    def calculate_rsi(prices: pd.Series, window: int = 14) -> pd.Series:
-        """Calculate RSI"""
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+        
+        close = data['Close']
+        volume = data['Volume']
+        
+        # Simple indicators
+        sma_20 = close.rolling(20).mean()
+        sma_50 = close.rolling(50).mean() if len(close) >= 50 else sma_20
+        
+        # RSI calculation
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
-        return rsi
-    
-    @staticmethod
-    def calculate_macd(prices: pd.Series) -> Tuple[pd.Series, pd.Series]:
-        """Calculate MACD"""
-        exp1 = prices.ewm(span=12, adjust=False).mean()
-        exp2 = prices.ewm(span=26, adjust=False).mean()
-        macd = exp1 - exp2
-        signal = macd.ewm(span=9, adjust=False).mean()
-        return macd, signal
+        
+        current_price = close.iloc[-1]
+        current_rsi = rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
+        
+        # Technical score
+        tech_score = 0
+        
+        # Trend score (0-40 points)
+        if not pd.isna(sma_20.iloc[-1]) and current_price > sma_20.iloc[-1]:
+            tech_score += 20
+        if len(close) >= 50 and not pd.isna(sma_50.iloc[-1]) and current_price > sma_50.iloc[-1]:
+            tech_score += 20
+        
+        # RSI score (0-25 points)
+        if 45 <= current_rsi <= 55:
+            tech_score += 25  # Neutral zone
+        elif 35 <= current_rsi < 45 or 55 < current_rsi <= 65:
+            tech_score += 20  # Good momentum
+        elif 25 <= current_rsi < 35 or 65 < current_rsi <= 75:
+            tech_score += 15  # Strong momentum
+        
+        # Volume score (0-20 points)
+        avg_volume = volume.rolling(20).mean().iloc[-1]
+        if volume.iloc[-1] > avg_volume * 1.5:
+            tech_score += 20
+        elif volume.iloc[-1] > avg_volume:
+            tech_score += 15
+        else:
+            tech_score += 10
+        
+        # Price position score (0-15 points)
+        period_high = close.rolling(min(len(close), 252)).max().iloc[-1]
+        period_low = close.rolling(min(len(close), 252)).min().iloc[-1]
+        price_pos = (current_price - period_low) / (period_high - period_low) * 100
+        
+        if 60 <= price_pos <= 85:
+            tech_score += 15
+        elif 40 <= price_pos < 60:
+            tech_score += 10
+        elif price_pos >= 85:
+            tech_score += 8
+        else:
+            tech_score += 5
+        
+        # Determine recommendation
+        if tech_score >= 80:
+            recommendation = 'STRONG_BUY'
+        elif tech_score >= 65:
+            recommendation = 'BUY'
+        elif tech_score >= 50:
+            recommendation = 'HOLD'
+        elif tech_score >= 35:
+            recommendation = 'WEAK_HOLD'
+        else:
+            recommendation = 'AVOID'
+        
+        return {
+            'symbol': symbol.replace('.NS', ''),
+            'technical_score': tech_score,
+            'recommendation': recommendation,
+            'current_price': round(float(current_price), 2),
+            'rsi': round(current_rsi, 1),
+            'price_position': round(price_pos, 1),
+            'qualified': tech_score >= CONFIG['technical_score_threshold']
+        }
+    except Exception as e:
+        print(f"Technical analysis error for {symbol}: {e}")
+        return None
 
-# ==================== MAIN SCANNING ENGINE ====================
-
+# Main scanning function (same logic)
 def run_complete_scan():
-    """Run two-stage scanning: Fundamental filtering then Technical analysis"""
+    """Two-stage scanning process"""
     global scan_data
     
     scan_data['status'] = 'running'
@@ -553,784 +382,974 @@ def run_complete_scan():
     scan_data['progress'] = 0
     
     try:
-        # Stage 1: Get all NSE symbols
-        print("Stage 1: Fetching NSE symbols...")
-        all_symbols = get_all_nse_symbols()
+        all_symbols = get_nse_symbols()
         scan_data['total_stocks'] = len(all_symbols)
         
-        # Stage 2: Fundamental filtering
-        print(f"Stage 2: Fundamental analysis on {len(all_symbols)} stocks...")
-        scan_data['stage'] = 'fundamental_filtering'
-        fundamentally_sound_stocks = []
+        fundamental_stocks = []
         
-        for i, symbol in enumerate(all_symbols):
+        for i, symbol in enumerate(all_symbols[:80]):  # Scan more stocks
             try:
-                # Progress update
-                scan_data['progress'] = int((i / len(all_symbols)) * 50)  # 50% for fundamental stage
+                scan_data['progress'] = int((i / 80) * 50)
                 
-                # Get fundamental data
-                fund_data = FundamentalAnalyzer.get_fundamental_data(symbol)
-                if not fund_data:
-                    continue
-                
-                # Calculate fundamental score
-                fund_score = FundamentalAnalyzer.calculate_fundamental_score(fund_data)
-                
-                # Combine data
-                combined_data = {**fund_data, **fund_score}
-                
-                if fund_score.get('passed_filter', False):
-                    fundamentally_sound_stocks.append(combined_data)
-                
-                # Limit for performance (can be removed for full scan)
-                if len(fundamentally_sound_stocks) >= 100:
-                    break
+                fund_data = get_fundamental_data(symbol)
+                if fund_data:
+                    fund_score = calculate_fundamental_score(fund_data)
+                    combined = {**fund_data, **fund_score}
                     
+                    if fund_score['passed']:
+                        fundamental_stocks.append(combined)
+                
             except Exception as e:
                 print(f"Error processing {symbol}: {e}")
                 continue
         
-        scan_data['fundamental_passed'] = len(fundamentally_sound_stocks)
-        scan_data['fundamental_results'] = fundamentally_sound_stocks
+        scan_data['fundamental_passed'] = len(fundamental_stocks)
+        scan_data['fundamental_results'] = fundamental_stocks
         
-        print(f"Stage 2 Complete: {len(fundamentally_sound_stocks)} stocks passed fundamental filter")
-        
-        # Stage 3: Technical analysis on fundamentally sound stocks
-        print("Stage 3: Technical analysis on fundamentally sound stocks...")
+        # Technical analysis stage
         scan_data['stage'] = 'technical_analysis'
+        final_stocks = []
         
-        final_qualified_stocks = []
-        
-        for i, fund_stock in enumerate(fundamentally_sound_stocks):
+        for i, fund_stock in enumerate(fundamental_stocks):
             try:
-                # Progress update (50-100%)
-                scan_data['progress'] = 50 + int((i / len(fundamentally_sound_stocks)) * 50)
+                scan_data['progress'] = 50 + int((i / len(fundamental_stocks)) * 50)
                 
                 symbol = f"{fund_stock['symbol']}.NS"
-                tech_analysis = TechnicalAnalyzer.calculate_technical_score(symbol)
+                tech_result = calculate_technical_score(symbol)
                 
-                if tech_analysis and tech_analysis.get('qualified', False):
-                    # Combine fundamental and technical data
-                    combined_stock = {
+                if tech_result and tech_result['qualified']:
+                    combined = {
                         **fund_stock,
-                        **tech_analysis,
-                        'final_score': round((fund_stock['total_score'] * 10 + tech_analysis['technical_score']) / 2, 1)
+                        **tech_result,
+                        'final_score': round((fund_stock['score'] * 10 + tech_result['technical_score']) / 2, 1)
                     }
-                    final_qualified_stocks.append(combined_stock)
+                    final_stocks.append(combined)
                     
             except Exception as e:
-                print(f"Error in technical analysis for {fund_stock['symbol']}: {e}")
+                print(f"Technical analysis error: {e}")
                 continue
         
-        # Sort by final score
-        final_qualified_stocks.sort(key=lambda x: x['final_score'], reverse=True)
+        final_stocks.sort(key=lambda x: x['final_score'], reverse=True)
         
-        scan_data['technical_qualified'] = len(final_qualified_stocks)
-        scan_data['final_results'] = final_qualified_stocks
+        scan_data['technical_qualified'] = len(final_stocks)
+        scan_data['final_results'] = final_stocks
         scan_data['status'] = 'completed'
         scan_data['stage'] = 'completed'
         scan_data['progress'] = 100
         scan_data['last_update'] = datetime.now().isoformat()
         
-        print(f"Scan Complete! {len(final_qualified_stocks)} stocks qualified both filters")
+        print(f"Scan complete: {len(final_stocks)} stocks qualified")
         
     except Exception as e:
         print(f"Scan error: {e}")
         scan_data['status'] = 'error'
-        scan_data['final_results'] = []
 
-# ==================== API ENDPOINTS ====================
-
+# API Endpoints
 @app.get("/health")
 def health():
-    return JSONResponse({
-        "status": "ok",
-        "features": ["fundamental_analysis", "technical_analysis", "two_stage_filtering"],
-        "min_market_cap_cr": CONFIG['min_market_cap_cr']
-    })
+    return JSONResponse({"status": "ok", "version": "3.0"})
 
-@app.post("/start-complete-scan")
-def start_complete_scan(background_tasks: BackgroundTasks):
+@app.post("/start-scan")
+def start_scan(background_tasks: BackgroundTasks):
     if scan_data["status"] == "running":
-        return JSONResponse({
-            "status": "already_running", 
-            "stage": scan_data["stage"],
-            "progress": scan_data["progress"]
-        }, status_code=202)
+        return JSONResponse({"status": "already_running"}, status_code=202)
     
     background_tasks.add_task(run_complete_scan)
-    return JSONResponse({
-        "status": "scan_started", 
-        "message": "Two-stage scanning initiated: Fundamental filtering + Technical analysis"
-    }, status_code=202)
+    return JSONResponse({"status": "scan_started"}, status_code=202)
 
 @app.get("/scan-status")
 def get_scan_status():
     return JSONResponse(scan_data)
 
-@app.get("/fundamental-results")
-def get_fundamental_results():
+@app.get("/results")
+def get_results():
     return JSONResponse({
-        "total_passed": scan_data.get('fundamental_passed', 0),
-        "results": scan_data.get('fundamental_results', [])[:50]  # Limit to 50 for UI
+        "fundamental_results": scan_data.get('fundamental_results', []),
+        "final_results": scan_data.get('final_results', [])
     })
 
-@app.get("/final-results")
-def get_final_results():
-    return JSONResponse({
-        "total_qualified": scan_data.get('technical_qualified', 0),
-        "results": scan_data.get('final_results', [])
-    })
-
-@app.get("/analyze-fundamental/{symbol}")
-def analyze_fundamental_single(symbol: str):
+@app.get("/analyze/{symbol}")
+def analyze_stock(symbol: str):
+    """Fixed individual stock analysis"""
     try:
+        # Ensure proper symbol format
         if not symbol.endswith('.NS'):
             symbol += '.NS'
         
-        fund_data = FundamentalAnalyzer.get_fundamental_data(symbol)
+        print(f"Analyzing {symbol}")
+        
+        # Get fundamental data with detailed error handling
+        fund_data = get_fundamental_data(symbol)
         if not fund_data:
-            return JSONResponse({"error": "No fundamental data available"}, status_code=404)
+            return JSONResponse({
+                "error": f"No fundamental data available for {symbol}. This could be due to: 1) Symbol not found, 2) Market cap below ₹{CONFIG['min_market_cap_cr']} cr, 3) Data source unavailable"
+            }, status_code=404)
         
-        fund_score = FundamentalAnalyzer.calculate_fundamental_score(fund_data)
+        # Calculate fundamental score
+        fund_score = calculate_fundamental_score(fund_data)
+        
+        # Get technical analysis if possible
+        tech_result = calculate_technical_score(symbol)
+        
+        # Combine results
         result = {**fund_data, **fund_score}
+        if tech_result:
+            result.update(tech_result)
+            result['final_score'] = round((fund_score['score'] * 10 + tech_result['technical_score']) / 2, 1)
+        else:
+            result['technical_score'] = 0
+            result['rsi'] = 0
+            result['recommendation'] = 'NO_TECHNICAL_DATA'
+            result['final_score'] = fund_score['score'] * 10
         
+        print(f"Analysis complete for {symbol}")
         return JSONResponse(result)
+        
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        print(f"Analysis error for {symbol}: {str(e)}")
+        return JSONResponse({
+            "error": f"Analysis failed for {symbol}: {str(e)}"
+        }, status_code=500)
 
 @app.get("/", response_class=HTMLResponse)
 def homepage():
-    return HTMLResponse(f"""
+    return HTMLResponse("""
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Complete Stock Scanner - Fundamental + Technical</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Stock Scanner Pro</title>
     <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #ffffff; min-height: 100vh; line-height: 1.6;
-        }}
-        .container {{ max-width: 1600px; margin: 0 auto; padding: 20px; }}
-        .header {{ 
-            text-align: center; margin-bottom: 40px; 
-            background: rgba(0,0,0,0.2); padding: 40px; border-radius: 20px;
-            backdrop-filter: blur(10px); box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        }}
-        .header h1 {{ 
-            font-size: 3.2em; margin-bottom: 15px; 
-            background: linear-gradient(135deg, #667eea, #764ba2);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-        }}
-        .header p {{ font-size: 1.4em; opacity: 0.9; margin-bottom: 10px; }}
-        .feature-highlight {{ 
-            background: linear-gradient(135deg, #11998e, #38ef7d); 
-            padding: 15px 25px; border-radius: 25px; display: inline-block;
-            font-weight: bold; margin-top: 15px;
-        }}
-        
-        .workflow-section {{ 
-            background: rgba(0,0,0,0.2); border-radius: 15px; padding: 30px; 
-            margin-bottom: 30px; backdrop-filter: blur(10px);
-        }}
-        .workflow-steps {{ 
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); 
-            gap: 20px; margin-top: 20px; 
-        }}
-        .step {{ 
-            background: rgba(255,255,255,0.1); padding: 20px; border-radius: 10px;
-            text-align: center; border: 2px solid rgba(255,255,255,0.2);
-        }}
-        .step-number {{ 
-            background: linear-gradient(135deg, #667eea, #764ba2); 
-            width: 40px; height: 40px; border-radius: 50%; 
-            display: flex; align-items: center; justify-content: center;
-            font-weight: bold; font-size: 1.2em; margin: 0 auto 15px;
-        }}
-        .step h3 {{ margin-bottom: 10px; color: #fff; }}
-        .step p {{ font-size: 0.9em; opacity: 0.8; }}
-        
-        .controls {{ 
-            display: flex; justify-content: center; gap: 25px; 
-            margin-bottom: 40px; flex-wrap: wrap; 
-        }}
-        .btn {{ 
-            padding: 18px 35px; border: none; border-radius: 10px; 
-            cursor: pointer; font-size: 1.2em; font-weight: 600; 
-            transition: all 0.3s; text-decoration: none; display: inline-block;
-            box-shadow: 0 6px 20px rgba(0,0,0,0.3); position: relative; overflow: hidden;
-        }}
-        .btn:before {{
-            content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-            transition: left 0.5s; z-index: 1;
-        }}
-        .btn:hover:before {{ left: 100%; }}
-        .btn:hover {{ transform: translateY(-3px); box-shadow: 0 10px 30px rgba(0,0,0,0.4); }}
-        .btn:disabled {{ background: #555; cursor: not-allowed; transform: none; }}
-        .btn-primary {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }}
-        .btn-success {{ background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }}
-        .btn-info {{ background: linear-gradient(135deg, #FF9800 0%, #FF5722 100%); }}
-        .btn-warning {{ background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }}
-        
-        .progress-section {{ 
-            background: rgba(0,0,0,0.2); border-radius: 15px; 
-            padding: 25px; margin-bottom: 30px; backdrop-filter: blur(10px);
-        }}
-        .progress-bar {{ 
-            width: 100%; height: 25px; background: rgba(0,0,0,0.3); 
-            border-radius: 15px; overflow: hidden; margin: 15px 0; position: relative;
-        }}
-        .progress-fill {{ 
-            height: 100%; background: linear-gradient(90deg, #11998e, #38ef7d); 
-            transition: width 0.3s; border-radius: 15px; position: relative;
-        }}
-        .progress-fill:after {{
-            content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-            background: linear-gradient(45deg, transparent 30%, rgba(255,255,255,0.3) 50%, transparent 70%);
-            animation: shimmer 2s infinite;
-        }}
-        @keyframes shimmer {{ 0% {{ transform: translateX(-100%); }} 100% {{ transform: translateX(100%); }} }}
-        
-        .stats-grid {{ 
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
-            gap: 20px; margin-bottom: 30px; 
-        }}
-        .stat-card {{ 
-            background: rgba(0,0,0,0.2); padding: 25px; border-radius: 15px; 
-            text-align: center; backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.1);
-            transition: transform 0.3s; cursor: pointer;
-        }}
-        .stat-card:hover {{ transform: translateY(-5px); }}
-        .stat-number {{ font-size: 2.5em; font-weight: bold; margin-bottom: 10px; }}
-        .stat-label {{ color: #ccc; font-size: 1em; }}
-        
-        .results-section {{ 
-            background: rgba(0,0,0,0.2); border-radius: 15px; 
-            padding: 30px; margin-bottom: 25px; backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.1);
-        }}
-        .tabs {{ 
-            display: flex; justify-content: center; margin-bottom: 25px; 
-            background: rgba(0,0,0,0.3); border-radius: 12px; padding: 8px;
-        }}
-        .tab {{ 
-            padding: 12px 25px; cursor: pointer; border-radius: 8px; 
-            transition: all 0.3s; margin: 0 5px; font-weight: 500;
-        }}
-        .tab.active {{ background: rgba(255,255,255,0.2); color: #fff; }}
-        .tab:hover {{ background: rgba(255,255,255,0.1); }}
-        .tab-content {{ display: none; }}
-        .tab-content.active {{ display: block; }}
-        
-        .results-table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
-        .results-table th, .results-table td {{ 
-            padding: 15px 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); 
-        }}
-        .results-table th {{ 
-            background: rgba(0,0,0,0.3); font-weight: 600; position: sticky; top: 0;
-        }}
-        .results-table tr:hover {{ background: rgba(255,255,255,0.1); }}
-        
-        .score-badge {{ 
-            padding: 6px 15px; border-radius: 20px; font-size: 0.9em; 
-            font-weight: bold; display: inline-block; min-width: 60px; text-align: center;
-        }}
-        .score-excellent {{ background: #4CAF50; color: white; }}
-        .score-very-good {{ background: #8BC34A; color: white; }}
-        .score-good {{ background: #FF9800; color: white; }}
-        .score-average {{ background: #FF5722; color: white; }}
-        .score-below-average {{ background: #795548; color: white; }}
-        .score-poor {{ background: #F44336; color: white; }}
-        
-        .recommendation {{ 
-            font-weight: bold; padding: 8px 15px; border-radius: 8px; 
-            display: inline-block; min-width: 100px; text-align: center;
-        }}
-        .rec-strong-buy {{ background: #4CAF50; color: white; }}
-        .rec-buy {{ background: #8BC34A; color: white; }}
-        .rec-hold {{ background: #FF9800; color: white; }}
-        .rec-weak-hold {{ background: #FF5722; color: white; }}
-        .rec-avoid {{ background: #F44336; color: white; }}
-        
-        .loading {{ text-align: center; padding: 50px; }}
-        .spinner {{ 
-            border: 4px solid rgba(255,255,255,0.3); border-top: 4px solid #fff; 
-            border-radius: 50%; width: 60px; height: 60px; 
-            animation: spin 1s linear infinite; margin: 0 auto 25px; 
-        }}
-        @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
-        
-        .beginner-mode {{ background: rgba(76, 175, 80, 0.1); }}
-        .professional-mode {{ background: rgba(103, 58, 183, 0.1); }}
-        
-        .mode-toggle {{ 
-            text-align: center; margin: 20px 0;
-        }}
-        .mode-btn {{ 
-            padding: 10px 20px; margin: 0 10px; border: 2px solid rgba(255,255,255,0.3);
-            background: transparent; color: #fff; border-radius: 8px; cursor: pointer;
-            transition: all 0.3s;
-        }}
-        .mode-btn.active {{ 
-            background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.6);
-        }}
-        
-        .tooltip {{ 
-            position: relative; display: inline-block; cursor: help;
-        }}
-        .tooltip .tooltiptext {{ 
-            visibility: hidden; width: 250px; background-color: rgba(0,0,0,0.9);
-            color: #fff; text-align: center; border-radius: 8px; padding: 8px;
-            position: absolute; z-index: 1; bottom: 125%; left: 50%;
-            margin-left: -125px; opacity: 0; transition: opacity 0.3s;
-        }}
-        .tooltip:hover .tooltiptext {{ visibility: visible; opacity: 1; }}
-        
-        #scan-stage {{ 
-            font-size: 1.3em; margin: 15px 0; text-align: center; 
-            padding: 15px; border-radius: 10px; background: rgba(0,0,0,0.3);
-        }}
-        .stage-fundamental {{ color: #FF9800; }}
-        .stage-technical {{ color: #2196F3; }}
-        .stage-completed {{ color: #4CAF50; }}
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --success: #059669;
+            --warning: #d97706;
+            --danger: #dc2626;
+            --info: #0891b2;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: var(--gray-50);
+            color: var(--gray-900);
+            line-height: 1.6;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
+
+        /* Header */
+        .header {
+            background: white;
+            border-bottom: 1px solid var(--gray-200);
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: var(--gray-900);
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.025em;
+        }
+
+        .header .subtitle {
+            color: var(--gray-600);
+            font-size: 1.125rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .header .description {
+            color: var(--gray-500);
+            font-size: 0.975rem;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 0.75rem;
+            justify-content: center;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.75rem 1.5rem;
+            border: 1px solid transparent;
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            outline: none;
+            min-height: 2.5rem;
+        }
+
+        .btn:focus {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+        }
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
+            border-color: var(--primary);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background-color: var(--primary-hover);
+            border-color: var(--primary-hover);
+        }
+
+        .btn-secondary {
+            background-color: white;
+            color: var(--gray-700);
+            border-color: var(--gray-300);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background-color: var(--gray-50);
+            color: var(--gray-900);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Cards */
+        .card {
+            background: white;
+            border: 1px solid var(--gray-200);
+            border-radius: 0.75rem;
+            box-shadow: var(--shadow-sm);
+        }
+
+        /* Progress Section */
+        .progress-section {
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stage-text {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--gray-900);
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 0.5rem;
+            background-color: var(--gray-200);
+            border-radius: 0.25rem;
+            overflow: hidden;
+            margin-bottom: 0.75rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--info));
+            transition: width 0.3s ease;
+            border-radius: 0.25rem;
+        }
+
+        .progress-text {
+            font-size: 0.875rem;
+            color: var(--gray-600);
+            text-align: center;
+        }
+
+        /* Stats Grid */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            padding: 1.25rem;
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            color: var(--gray-600);
+            font-weight: 500;
+        }
+
+        /* Results Section */
+        .results {
+            padding: 0;
+            margin-bottom: 2rem;
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--gray-200);
+            background: var(--gray-50);
+            border-radius: 0.75rem 0.75rem 0 0;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 1rem 1.25rem;
+            text-align: center;
+            cursor: pointer;
+            font-weight: 500;
+            color: var(--gray-600);
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s ease;
+        }
+
+        .tab:first-child { border-radius: 0.75rem 0 0 0; }
+        .tab:last-child { border-radius: 0 0.75rem 0 0; }
+
+        .tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+            background: white;
+        }
+
+        .tab-content {
+            display: none;
+            padding: 1.5rem;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .tab-content h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--gray-900);
+            margin-bottom: 1rem;
+        }
+
+        /* Tables */
+        .table-container {
+            overflow-x: auto;
+            margin-top: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--gray-200);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        th {
+            background-color: var(--gray-50);
+            font-weight: 600;
+            font-size: 0.875rem;
+            color: var(--gray-700);
+        }
+
+        tr:hover {
+            background-color: var(--gray-50);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+        }
+
+        .badge-success { background-color: #dcfce7; color: var(--success); }
+        .badge-info { background-color: #e0f2fe; color: var(--info); }
+        .badge-warning { background-color: #fef3c7; color: var(--warning); }
+        .badge-danger { background-color: #fee2e2; color: var(--danger); }
+        .badge-secondary { background-color: var(--gray-100); color: var(--gray-600); }
+
+        /* Company Info */
+        .company-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .company-name {
+            font-weight: 600;
+            color: var(--gray-900);
+            margin-bottom: 0.125rem;
+        }
+
+        .company-sector {
+            color: var(--gray-500);
+            font-size: 0.8125rem;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--gray-500);
+        }
+
+        .empty-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--gray-500);
+        }
+
+        .spinner {
+            width: 2rem;
+            height: 2rem;
+            border: 0.125rem solid var(--gray-200);
+            border-top: 0.125rem solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Analysis Form */
+        .analysis-form {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .form-input {
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--gray-300);
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            min-width: 200px;
+            outline: none;
+            transition: border-color 0.15s ease;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .form-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        /* Analysis Results */
+        .analysis-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .metric-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .metric-item:last-child {
+            border-bottom: none;
+        }
+
+        .metric-label {
+            font-weight: 500;
+            color: var(--gray-700);
+        }
+
+        .metric-value {
+            color: var(--gray-900);
+            font-weight: 600;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container { padding: 0 1rem; }
+            .header { padding: 1.5rem 0; margin-bottom: 1.5rem; }
+            .header h1 { font-size: 2rem; }
+            .controls { gap: 0.5rem; }
+            .btn { padding: 0.625rem 1.25rem; font-size: 0.8125rem; }
+            .tabs { flex-direction: column; }
+            .tab { border-right: none; border-bottom: 1px solid var(--gray-200); }
+            .tab:first-child, .tab:last-child { border-radius: 0; }
+            .analysis-form { flex-direction: column; align-items: stretch; }
+            .form-input { min-width: auto; }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🎯 Complete Stock Scanner Pro</h1>
-            <p>Two-Stage Analysis: Fundamental Filtering + Advanced Technical Analysis</p>
-            <p>Smart screening with Market Cap > ₹50 Cr + Quality Score > 6/10</p>
-            <div class="feature-highlight">
-                📊 Fundamental Analysis → 🔬 Technical Analysis → 💎 Final Recommendations
-            </div>
+    <div class="header">
+        <div class="container">
+            <h1>Stock Scanner Pro</h1>
+            <p class="subtitle">Two-Stage Analysis: Fundamental Quality + Technical Timing</p>
+            <p class="description">Market Cap > ₹10 Cr • Quality Score > 5/10 • Technical Score > 50/100</p>
         </div>
-        
-        <div class="mode-toggle">
-            <button class="mode-btn active" onclick="setMode('beginner')">👶 Beginner Mode</button>
-            <button class="mode-btn" onclick="setMode('professional')">👨‍💼 Professional Mode</button>
-        </div>
-        
-        <div class="workflow-section">
-            <h2 style="text-align: center; margin-bottom: 25px;">📋 Two-Stage Scanning Process</h2>
-            <div class="workflow-steps">
-                <div class="step">
-                    <div class="step-number">1</div>
-                    <h3>NSE Stock Universe</h3>
-                    <p>Fetch all NSE listed stocks dynamically from multiple sources</p>
-                </div>
-                <div class="step">
-                    <div class="step-number">2</div>
-                    <h3>Fundamental Filter</h3>
-                    <p>Market Cap > ₹50 Cr + Quality Score 6+/10 (P/E, ROE, Debt, Growth)</p>
-                </div>
-                <div class="step">
-                    <div class="step-number">3</div>
-                    <h3>Technical Analysis</h3>
-                    <p>Advanced indicators on fundamentally sound stocks only</p>
-                </div>
-                <div class="step">
-                    <div class="step-number">4</div>
-                    <h3>Final Recommendations</h3>
-                    <p>Combined scores with risk-adjusted position sizing</p>
-                </div>
-            </div>
-        </div>
+    </div>
 
+    <div class="container">
         <div class="controls">
-            <button class="btn btn-primary" onclick="startCompleteScan()" id="scanBtn">
-                🚀 Start Complete Scan
+            <button class="btn btn-primary" onclick="startScan()" id="scanBtn">
+                Start Complete Scan
             </button>
-            <button class="btn btn-success" onclick="showTab('final-results')">
-                📈 Final Results
+            <button class="btn btn-secondary" onclick="showTab('final')">
+                Final Results
             </button>
-            <button class="btn btn-info" onclick="showTab('fundamental-results')">
-                📊 Fundamental Analysis
-            </button>
-            <button class="btn btn-warning" onclick="analyzeCustomStock()">
-                🔍 Analyze Stock
+            <button class="btn btn-secondary" onclick="showTab('fundamental')">
+                Fundamental Results
             </button>
         </div>
         
-        <div class="progress-section">
-            <div id="scan-stage">Ready to scan NSE universe...</div>
+        <div class="card progress-section">
+            <div class="stage-text" id="stage-text">Ready to start complete scan</div>
             <div class="progress-bar">
                 <div class="progress-fill" id="progress-fill" style="width: 0%;"></div>
             </div>
-            <div id="progress-text">Click "Start Complete Scan" to begin</div>
+            <div class="progress-text" id="progress-text">Click "Start Complete Scan" to begin</div>
         </div>
 
-        <div class="stats-grid">
-            <div class="stat-card tooltip">
-                <div class="stat-number" id="total-stocks" style="color: #2196F3;">-</div>
-                <div class="stat-label">Total NSE Stocks</div>
-                <span class="tooltiptext">All stocks fetched from NSE for analysis</span>
+        <div class="stats">
+            <div class="card stat-card">
+                <div class="stat-number" id="total-stocks">-</div>
+                <div class="stat-label">Total Stocks Scanned</div>
             </div>
-            <div class="stat-card tooltip">
-                <div class="stat-number" id="fundamental-passed" style="color: #FF9800;">-</div>
+            <div class="card stat-card">
+                <div class="stat-number" id="fundamental-passed">-</div>
                 <div class="stat-label">Fundamental Filter Passed</div>
-                <span class="tooltiptext">Stocks with Market Cap > ₹50 Cr and Quality Score > 6/10</span>
             </div>
-            <div class="stat-card tooltip">
-                <div class="stat-number" id="technical-qualified" style="color: #4CAF50;">-</div>
+            <div class="card stat-card">
+                <div class="stat-number" id="technical-qualified">-</div>
                 <div class="stat-label">Final Qualified</div>
-                <span class="tooltiptext">Stocks passing both fundamental and technical filters</span>
-            </div>
-            <div class="stat-card tooltip">
-                <div class="stat-number" id="avg-final-score" style="color: #9C27B0;">-</div>
-                <div class="stat-label">Average Final Score</div>
-                <span class="tooltiptext">Combined fundamental + technical score</span>
             </div>
         </div>
 
-        <div class="results-section">
+        <div class="card results">
             <div class="tabs">
-                <div class="tab active" onclick="showTab('final-results')">🎯 Final Results</div>
-                <div class="tab" onclick="showTab('fundamental-results')">📊 Fundamental Analysis</div>
-                <div class="tab" onclick="showTab('custom-analysis')">🔍 Custom Analysis</div>
+                <div class="tab active" onclick="showTab('final')">Final Results</div>
+                <div class="tab" onclick="showTab('fundamental')">Fundamental Results</div>
+                <div class="tab" onclick="showTab('analyze')">Analyze Stock</div>
             </div>
 
-            <div id="final-results" class="tab-content active">
-                <h2>🎯 Final Qualified Stocks (Fundamental + Technical)</h2>
-                <div id="final-results-content">
-                    <p style="text-align: center; color: #ccc; padding: 50px;">
-                        Complete scan will show stocks that pass both fundamental and technical filters...
-                    </p>
+            <div id="final" class="tab-content active">
+                <h2>Final Qualified Stocks</h2>
+                <div id="final-content">
+                    <div class="empty-state">
+                        <div class="empty-icon">📊</div>
+                        <p>Stocks passing both fundamental and technical filters will appear here</p>
+                    </div>
                 </div>
             </div>
 
-            <div id="fundamental-results" class="tab-content">
-                <h2>📊 Fundamentally Sound Stocks (Market Cap > ₹50 Cr)</h2>
-                <div id="fundamental-results-content">
-                    <p style="text-align: center; color: #ccc; padding: 50px;">
-                        Fundamental analysis results will appear here...
-                    </p>
+            <div id="fundamental" class="tab-content">
+                <h2>Fundamentally Sound Stocks</h2>
+                <div id="fundamental-content">
+                    <div class="empty-state">
+                        <div class="empty-icon">📈</div>
+                        <p>Stocks passing fundamental filter will appear here</p>
+                    </div>
                 </div>
             </div>
 
-            <div id="custom-analysis" class="tab-content">
-                <h2>🔍 Individual Stock Analysis</h2>
-                <div style="text-align: center; margin-bottom: 25px;">
-                    <input type="text" id="stock-symbol" placeholder="Enter stock symbol (e.g., RELIANCE)" 
-                           style="padding: 15px; border-radius: 8px; border: none; width: 250px; margin-right: 15px; color: #333;">
-                    <button class="btn btn-primary" onclick="analyzeIndividualStock()">Analyze</button>
+            <div id="analyze" class="tab-content">
+                <h2>Individual Stock Analysis</h2>
+                <div class="analysis-form">
+                    <input 
+                        type="text" 
+                        id="stock-symbol" 
+                        class="form-input" 
+                        placeholder="Enter stock symbol (e.g., RELIANCE)"
+                        onkeypress="if(event.key==='Enter') analyzeStock()"
+                    >
+                    <button class="btn btn-primary" onclick="analyzeStock()">Analyze Stock</button>
                 </div>
-                <div id="custom-analysis-content">
-                    <p style="text-align: center; color: #ccc; padding: 50px;">
-                        Enter a stock symbol to get comprehensive fundamental + technical analysis...
-                    </p>
+                <div id="analyze-content">
+                    <div class="empty-state">
+                        <div class="empty-icon">🔍</div>
+                        <p>Enter a stock symbol to get detailed fundamental and technical analysis</p>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        let currentMode = 'beginner';
         let scanInterval;
 
-        function setMode(mode) {{
-            currentMode = mode;
-            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-            
-            document.body.className = mode === 'beginner' ? 'beginner-mode' : 'professional-mode';
-            
-            // Adjust UI complexity based on mode
-            const professionalElements = document.querySelectorAll('.professional-only');
-            professionalElements.forEach(el => {{
-                el.style.display = mode === 'professional' ? 'block' : 'none';
-            }});
-        }}
-
-        function showTab(tabName) {{
+        function showTab(tabName) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             
             event.target.classList.add('active');
             document.getElementById(tabName).classList.add('active');
-        }}
+        }
 
-        async function startCompleteScan() {{
-            document.getElementById('scanBtn').disabled = true;
-            document.getElementById('scanBtn').textContent = '🔄 Scanning...';
+        async function startScan() {
+            const scanBtn = document.getElementById('scanBtn');
+            scanBtn.disabled = true;
+            scanBtn.textContent = 'Scanning...';
             
-            try {{
-                await fetch('/start-complete-scan', {{method: 'POST'}});
+            try {
+                await fetch('/start-scan', {method: 'POST'});
                 
-                scanInterval = setInterval(async () => {{
-                    const response = await fetch('/scan-status');
-                    const data = await response.json();
-                    
-                    updateScanProgress(data);
-                    
-                    if (data.status === 'completed') {{
-                        clearInterval(scanInterval);
-                        await loadFinalResults();
-                        await loadFundamentalResults();
-                        document.getElementById('scanBtn').disabled = false;
-                        document.getElementById('scanBtn').textContent = '🚀 Start Complete Scan';
-                    }}
-                }}, 3000);
+                scanInterval = setInterval(async () => {
+                    try {
+                        const response = await fetch('/scan-status');
+                        const data = await response.json();
+                        
+                        updateProgress(data);
+                        
+                        if (data.status === 'completed') {
+                            clearInterval(scanInterval);
+                            await loadResults();
+                            scanBtn.disabled = false;
+                            scanBtn.textContent = 'Start Complete Scan';
+                        }
+                    } catch (error) {
+                        console.error('Status update error:', error);
+                    }
+                }, 3000);
                 
-            }} catch (error) {{
-                console.error('Scan error:', error);
-                document.getElementById('scanBtn').disabled = false;
-                document.getElementById('scanBtn').textContent = '🚀 Start Complete Scan';
-            }}
-        }}
+            } catch (error) {
+                console.error('Scan start error:', error);
+                scanBtn.disabled = false;
+                scanBtn.textContent = 'Start Complete Scan';
+            }
+        }
 
-        function updateScanProgress(data) {{
+        function updateProgress(data) {
             const progress = data.progress || 0;
             document.getElementById('progress-fill').style.width = progress + '%';
             
-            // Update stage display
-            const stageElement = document.getElementById('scan-stage');
             let stageText = '';
-            let stageClass = '';
-            
-            switch(data.stage) {{
+            switch(data.stage) {
                 case 'fundamental_filtering':
-                    stageText = '📊 Stage 1: Fundamental Analysis in Progress...';
-                    stageClass = 'stage-fundamental';
+                    stageText = 'Stage 1: Fundamental Analysis in Progress';
                     break;
                 case 'technical_analysis':
-                    stageText = '🔬 Stage 2: Technical Analysis on Quality Stocks...';
-                    stageClass = 'stage-technical';
+                    stageText = 'Stage 2: Technical Analysis on Quality Stocks';
                     break;
                 case 'completed':
-                    stageText = '✅ Scan Complete! Both stages finished.';
-                    stageClass = 'stage-completed';
+                    stageText = 'Scan Complete';
                     break;
                 default:
-                    stageText = 'Ready to scan NSE universe...';
-                    stageClass = '';
-            }}
+                    stageText = 'Ready to start complete scan';
+            }
             
-            stageElement.textContent = stageText;
-            stageElement.className = stageClass;
+            document.getElementById('stage-text').textContent = stageText;
+            document.getElementById('progress-text').textContent = `Progress: ${progress}%`;
             
-            // Update stats
-            document.getElementById('total-stocks').textContent = data.total_stocks || 0;
-            document.getElementById('fundamental-passed').textContent = data.fundamental_passed || 0;
-            document.getElementById('technical-qualified').textContent = data.technical_qualified || 0;
-            
-            document.getElementById('progress-text').textContent = 
-                `Progress: ${{progress}}% - ${{data.stage.replace('_', ' ')}}`;
-        }}
+            document.getElementById('total-stocks').textContent = data.total_stocks || '-';
+            document.getElementById('fundamental-passed').textContent = data.fundamental_passed || '-';
+            document.getElementById('technical-qualified').textContent = data.technical_qualified || '-';
+        }
 
-        async function loadFinalResults() {{
-            try {{
-                const response = await fetch('/final-results');
+        async function loadResults() {
+            try {
+                const response = await fetch('/results');
                 const data = await response.json();
-                displayFinalResults(data.results || []);
                 
-                if (data.results && data.results.length > 0) {{
-                    const avgScore = data.results.reduce((sum, stock) => 
-                        sum + (stock.final_score || 0), 0) / data.results.length;
-                    document.getElementById('avg-final-score').textContent = Math.round(avgScore);
-                }}
-            }} catch (error) {{
-                console.error('Error loading final results:', error);
-            }}
-        }}
+                displayFinalResults(data.final_results || []);
+                displayFundamentalResults(data.fundamental_results || []);
+            } catch (error) {
+                console.error('Error loading results:', error);
+            }
+        }
 
-        async function loadFundamentalResults() {{
-            try {{
-                const response = await fetch('/fundamental-results');
-                const data = await response.json();
-                displayFundamentalResults(data.results || []);
-            }} catch (error) {{
-                console.error('Error loading fundamental results:', error);
-            }}
-        }}
-
-        function displayFinalResults(stocks) {{
-            const content = document.getElementById('final-results-content');
+        function displayFinalResults(stocks) {
+            const content = document.getElementById('final-content');
             
-            if (!stocks || stocks.length === 0) {{
-                content.innerHTML = '<p style="text-align: center; color: #ccc; padding: 50px;">No stocks qualified both filters.</p>';
+            if (!stocks || stocks.length === 0) {
+                content.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📊</div>
+                        <p>No stocks qualified both filters</p>
+                    </div>
+                `;
                 return;
-            }}
+            }
 
-            let html = `<div style="margin-bottom: 20px;">🎯 Found ${{stocks.length}} stocks passing both fundamental and technical filters</div>`;
-            html += '<table class="results-table"><thead><tr>';
-            html += '<th>Stock</th><th>Sector</th><th>Market Cap (₹Cr)</th><th>Final Score</th>';
-            html += '<th>Fundamental Grade</th><th>Technical Score</th><th>Recommendation</th>';
-            html += '<th>Current Price</th><th>P/E Ratio</th><th>ROE</th>';
-            html += '</tr></thead><tbody>';
+            let html = `<p style="margin-bottom: 1rem; color: var(--gray-600);">Found ${stocks.length} stocks passing both filters</p>`;
+            html += `
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Stock</th>
+                                <th>Final Score</th>
+                                <th>Fund Grade</th>
+                                <th>Tech Score</th>
+                                <th>Recommendation</th>
+                                <th>Price</th>
+                                <th>Market Cap</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            `;
 
-            stocks.forEach(stock => {{
-                const finalScore = stock.final_score || 0;
-                const scoreClass = finalScore >= 80 ? 'score-excellent' : 
-                                 finalScore >= 70 ? 'score-very-good' : 
-                                 finalScore >= 60 ? 'score-good' : 'score-average';
-                                 
-                const recClass = (stock.recommendation || '').toLowerCase().replace('_', '-');
-                const gradeClass = `score-${{(stock.quality || 'average').toLowerCase().replace('_', '-')}}`;
+            stocks.forEach(stock => {
+                const gradeClass = getGradeBadgeClass(stock.grade);
+                const recClass = getRecommendationClass(stock.recommendation);
                 
-                html += `<tr>
-                    <td><strong>${{stock.symbol || stock.company_name}}</strong><br><small>${{stock.company_name || ''}}</small></td>
-                    <td>${{stock.sector || 'Unknown'}}</td>
-                    <td>₹${{(stock.market_cap_cr || 0).toLocaleString()}}</td>
-                    <td><span class="score-badge ${{scoreClass}}">${{Math.round(finalScore)}}</span></td>
-                    <td><span class="score-badge ${{gradeClass}}">${{stock.grade || 'N/A'}}</span></td>
-                    <td>${{stock.technical_score || 0}}/100</td>
-                    <td><span class="recommendation rec-${{recClass}}">${{stock.recommendation || 'HOLD'}}</span></td>
-                    <td>₹${{(stock.current_price || 0).toFixed(2)}}</td>
-                    <td>${{(stock.pe_ratio || 0).toFixed(1)}}</td>
-                    <td>${{(stock.roe || 0).toFixed(1)}}%</td>
-                </tr>`;
-            }});
+                html += `
+                    <tr>
+                        <td>
+                            <div class="company-info">
+                                <div class="company-name">${stock.symbol}</div>
+                                <div class="company-sector">${stock.sector || 'Unknown'}</div>
+                            </div>
+                        </td>
+                        <td><strong>${stock.final_score || 0}</strong></td>
+                        <td><span class="badge ${gradeClass}">${stock.grade || 'N/A'}</span></td>
+                        <td>${stock.technical_score || 0}/100</td>
+                        <td><span class="badge ${recClass}">${stock.recommendation || 'HOLD'}</span></td>
+                        <td>₹${(stock.current_price || 0).toFixed(2)}</td>
+                        <td>₹${(stock.market_cap_cr || 0).toLocaleString()} Cr</td>
+                    </tr>
+                `;
+            });
 
-            html += '</tbody></table>';
+            html += '</tbody></table></div>';
             content.innerHTML = html;
-        }}
+        }
 
-        function displayFundamentalResults(stocks) {{
-            const content = document.getElementById('fundamental-results-content');
+        function displayFundamentalResults(stocks) {
+            const content = document.getElementById('fundamental-content');
             
-            if (!stocks || stocks.length === 0) {{
-                content.innerHTML = '<p style="text-align: center; color: #ccc; padding: 50px;">No fundamental results available.</p>';
+            if (!stocks || stocks.length === 0) {
+                content.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📈</div>
+                        <p>No fundamental results available</p>
+                    </div>
+                `;
                 return;
-            }}
+            }
 
-            let html = `<div style="margin-bottom: 20px;">📊 Found ${{stocks.length}} fundamentally sound stocks (Market Cap > ₹50 Cr, Quality Score > 6/10)</div>`;
-            html += '<table class="results-table"><thead><tr>';
-            html += '<th>Stock</th><th>Sector</th><th>Market Cap (₹Cr)</th><th>Quality Score</th><th>Grade</th>';
-            html += '<th>P/E Ratio</th><th>ROE</th><th>Debt/Equity</th><th>Revenue Growth</th><th>Dividend Yield</th>';
-            html += '</tr></thead><tbody>';
+            let html = `<p style="margin-bottom: 1rem; color: var(--gray-600);">Found ${stocks.length} fundamentally sound stocks</p>`;
+            html += `
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Stock</th>
+                                <th>Market Cap (₹Cr)</th>
+                                <th>Score</th>
+                                <th>Grade</th>
+                                <th>P/E</th>
+                                <th>ROE</th>
+                                <th>Debt/Equity</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            `;
 
-            stocks.slice(0, 50).forEach(stock => {{  // Show top 50
-                const score = stock.total_score || 0;
-                const gradeClass = `score-${{(stock.quality || 'average').toLowerCase().replace('_', '-')}}`;
+            stocks.slice(0, 50).forEach(stock => {
+                const gradeClass = getGradeBadgeClass(stock.grade);
                 
-                html += `<tr>
-                    <td><strong>${{stock.symbol}}</strong><br><small>${{stock.company_name || ''}}</small></td>
-                    <td>${{stock.sector || 'Unknown'}}</td>
-                    <td>₹${{(stock.market_cap_cr || 0).toLocaleString()}}</td>
-                    <td><span class="score-badge ${{gradeClass}}">${{score.toFixed(1)}}/10</span></td>
-                    <td><span class="score-badge ${{gradeClass}}">${{stock.grade || 'N/A'}}</span></td>
-                    <td>${{(stock.pe_ratio || 0).toFixed(1)}}</td>
-                    <td>${{(stock.roe || 0).toFixed(1)}}%</td>
-                    <td>${{(stock.debt_to_equity || 0).toFixed(2)}}</td>
-                    <td>${{(stock.revenue_growth || 0).toFixed(1)}}%</td>
-                    <td>${{(stock.dividend_yield || 0).toFixed(2)}}%</td>
-                </tr>`;
-            }});
+                html += `
+                    <tr>
+                        <td>
+                            <div class="company-info">
+                                <div class="company-name">${stock.symbol}</div>
+                                <div class="company-sector">${stock.sector || 'Unknown'}</div>
+                            </div>
+                        </td>
+                        <td>₹${(stock.market_cap_cr || 0).toLocaleString()}</td>
+                        <td><strong>${(stock.score || 0).toFixed(1)}/10</strong></td>
+                        <td><span class="badge ${gradeClass}">${stock.grade || 'N/A'}</span></td>
+                        <td>${(stock.pe_ratio || 0).toFixed(1)}</td>
+                        <td>${(stock.roe || 0).toFixed(1)}%</td>
+                        <td>${(stock.debt_to_equity || 0).toFixed(2)}</td>
+                    </tr>
+                `;
+            });
 
-            html += '</tbody></table>';
+            html += '</tbody></table></div>';
             content.innerHTML = html;
-        }}
+        }
 
-        async function analyzeIndividualStock() {{
+        async function analyzeStock() {
             const symbol = document.getElementById('stock-symbol').value.trim().toUpperCase();
-            if (!symbol) {{
+            if (!symbol) {
                 alert('Please enter a stock symbol');
                 return;
-            }}
+            }
             
-            document.getElementById('custom-analysis-content').innerHTML = 
-                '<div class="loading"><div class="spinner"></div><p>Analyzing ' + symbol + '...</p></div>';
+            document.getElementById('analyze-content').innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Analyzing ${symbol}...</p>
+                </div>
+            `;
             
-            try {{
-                const response = await fetch(`/analyze-fundamental/${{symbol}}`);
+            try {
+                const response = await fetch(`/analyze/${symbol}`);
                 const data = await response.json();
                 
-                if (data.error) {{
-                    document.getElementById('custom-analysis-content').innerHTML = 
-                        '<p style="color: #F44336; text-align: center; padding: 40px;">Analysis Error: ' + data.error + '</p>';
+                if (data.error) {
+                    document.getElementById('analyze-content').innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-icon" style="color: var(--danger);">❌</div>
+                            <p><strong>Error:</strong> ${data.error}</p>
+                        </div>
+                    `;
                     return;
-                }}
+                }
                 
-                displayCustomAnalysis(data);
+                displayStockAnalysis(data);
                 
-            }} catch (error) {{
-                document.getElementById('custom-analysis-content').innerHTML = 
-                    '<p style="color: #F44336; text-align: center; padding: 40px;">Error: ' + error.message + '</p>';
-            }}
-        }}
+            } catch (error) {
+                document.getElementById('analyze-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon" style="color: var(--danger);">❌</div>
+                        <p><strong>Network Error:</strong> ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
 
-        function displayCustomAnalysis(data) {{
-            const gradeClass = `score-${{(data.quality || 'average').toLowerCase().replace('_', '-')}}`;
+        function displayStockAnalysis(data) {
+            const gradeClass = getGradeBadgeClass(data.grade);
+            const recClass = getRecommendationClass(data.recommendation);
             
-            let html = `<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px;">`;
+            let html = `
+                <div class="analysis-grid">
+                    <div class="card stat-card">
+                        <div class="stat-number" style="font-size: 1.5rem;">${data.symbol}</div>
+                        <div class="stat-label">${data.company_name || ''}</div>
+                    </div>
+                    <div class="card stat-card">
+                        <div class="stat-number">₹${(data.market_cap_cr || 0).toLocaleString()}</div>
+                        <div class="stat-label">Market Cap (Cr)</div>
+                    </div>
+                    <div class="card stat-card">
+                        <div class="stat-number">${(data.score || 0).toFixed(1)}/10</div>
+                        <div class="stat-label">Fundamental Score</div>
+                    </div>
+                    <div class="card stat-card">
+                        <div class="stat-number">${data.technical_score || 0}/100</div>
+                        <div class="stat-label">Technical Score</div>
+                    </div>
+                </div>
+            `;
             
-            html += `<div class="stat-card">
-                <h3>${{data.symbol}}</h3>
-                <div class="stat-number">₹${{(data.market_cap_cr || 0).toLocaleString()}}</div>
-                <div class="stat-label">Market Cap (Crores)</div>
-            </div>`;
+            html += `
+                <div class="table-container">
+                    <table>
+                        <tbody>
+                            <tr><td class="metric-label">Current Price</td><td class="metric-value">₹${(data.current_price || 0).toFixed(2)}</td></tr>
+                            <tr><td class="metric-label">Quality Grade</td><td class="metric-value"><span class="badge ${gradeClass}">${data.grade || 'N/A'}</span></td></tr>
+                            <tr><td class="metric-label">P/E Ratio</td><td class="metric-value">${(data.pe_ratio || 0).toFixed(1)}</td></tr>
+                            <tr><td class="metric-label">ROE</td><td class="metric-value">${(data.roe || 0).toFixed(1)}%</td></tr>
+                            <tr><td class="metric-label">Debt/Equity</td><td class="metric-value">${(data.debt_to_equity || 0).toFixed(2)}</td></tr>
+                            <tr><td class="metric-label">Revenue Growth</td><td class="metric-value">${(data.revenue_growth || 0).toFixed(1)}%</td></tr>
+                            <tr><td class="metric-label">Profit Margin</td><td class="metric-value">${(data.profit_margin || 0).toFixed(1)}%</td></tr>
+            `;
             
-            html += `<div class="stat-card">
-                <div class="stat-number score-badge ${{gradeClass}}">${{(data.total_score || 0).toFixed(1)}}/10</div>
-                <div class="stat-label">Quality Score</div>
-            </div>`;
+            if (data.rsi) {
+                html += `<tr><td class="metric-label">RSI</td><td class="metric-value">${data.rsi}</td></tr>`;
+            }
+            if (data.recommendation && data.recommendation !== 'NO_TECHNICAL_DATA') {
+                html += `<tr><td class="metric-label">Recommendation</td><td class="metric-value"><span class="badge ${recClass}">${data.recommendation}</span></td></tr>`;
+            }
+            if (data.final_score) {
+                html += `<tr><td class="metric-label">Final Score</td><td class="metric-value"><strong>${data.final_score}</strong></td></tr>`;
+            }
             
-            html += `<div class="stat-card">
-                <div class="stat-number score-badge ${{gradeClass}}">${{data.grade || 'N/A'}}</div>
-                <div class="stat-label">Quality Grade</div>
-            </div>`;
+            html += '</tbody></table></div>';
             
-            html += `<div class="stat-card">
-                <div class="stat-number">${{data.passed_filter ? '✅' : '❌'}}</div>
-                <div class="stat-label">Fundamental Filter</div>
-            </div>`;
-            
-            html += '</div>';
-            
-            // Detailed breakdown
-            html += '<h3>Detailed Fundamental Analysis</h3>';
-            html += '<table class="results-table"><tbody>';
-            html += `<tr><td><strong>Company</strong></td><td>${{data.company_name || data.symbol}}</td></tr>`;
-            html += `<tr><td><strong>Sector</strong></td><td>${{data.sector || 'Unknown'}}</td></tr>`;
-            html += `<tr><td><strong>Current Price</strong></td><td>₹${{(data.current_price || 0).toFixed(2)}}</td></tr>`;
-            html += `<tr><td><strong>P/E Ratio</strong></td><td>${{(data.pe_ratio || 0).toFixed(1)}}</td></tr>`;
-            html += `<tr><td><strong>P/B Ratio</strong></td><td>${{(data.pb_ratio || 0).toFixed(2)}}</td></tr>`;
-            html += `<tr><td><strong>ROE</strong></td><td>${{(data.roe || 0).toFixed(1)}}%</td></tr>`;
-            html += `<tr><td><strong>ROA</strong></td><td>${{(data.roa || 0).toFixed(1)}}%</td></tr>`;
-            html += `<tr><td><strong>Debt to Equity</strong></td><td>${{(data.debt_to_equity || 0).toFixed(2)}}</td></tr>`;
-            html += `<tr><td><strong>Current Ratio</strong></td><td>${{(data.current_ratio || 0).toFixed(2)}}</td></tr>`;
-            html += `<tr><td><strong>Revenue Growth</strong></td><td>${{(data.revenue_growth || 0).toFixed(1)}}%</td></tr>`;
-            html += `<tr><td><strong>Profit Margin</strong></td><td>${{(data.profit_margin || 0).toFixed(1)}}%</td></tr>`;
-            html += `<tr><td><strong>Dividend Yield</strong></td><td>${{(data.dividend_yield || 0).toFixed(2)}}%</td></tr>`;
-            html += `<tr><td><strong>Beta</strong></td><td>${{(data.beta || 0).toFixed(2)}}</td></tr>`;
-            html += '</tbody></table>';
-            
-            // Score breakdown
-            if (data.score_components) {{
-                html += '<h3 style="margin-top: 20px;">Score Breakdown</h3>';
-                html += '<table class="results-table"><tbody>';
-                Object.entries(data.score_components).forEach(([component, score]) => {{
-                    html += `<tr><td><strong>${{component.replace('_', ' ').toUpperCase()}}</strong></td><td>${{score.toFixed(2)}} points</td></tr>`;
-                }});
-                html += '</tbody></table>';
-            }}
-            
-            document.getElementById('custom-analysis-content').innerHTML = html;
-        }}
+            document.getElementById('analyze-content').innerHTML = html;
+        }
 
-        // Initialize
-        document.addEventListener('DOMContentLoaded', function() {{
-            setMode('beginner');
-        }});
+        function getGradeBadgeClass(grade) {
+            if (!grade) return 'badge-secondary';
+            switch (grade.toUpperCase()) {
+                case 'A+':
+                case 'A':
+                    return 'badge-success';
+                case 'B+':
+                case 'B':
+                    return 'badge-info';
+                case 'C+':
+                case 'C':
+                    return 'badge-warning';
+                default:
+                    return 'badge-danger';
+            }
+        }
 
-        // Auto-refresh every 30 seconds during scan
-        setInterval(async () => {{
-            if (scanInterval) {{
-                const response = await fetch('/scan-status');
-                const data = await response.json();
-                if (data.status === 'completed') {{
-                    await loadFinalResults();
-                    await loadFundamentalResults();
-                }}
-            }}
-        }}, 30000);
+        function getRecommendationClass(rec) {
+            if (!rec) return 'badge-secondary';
+            switch (rec.toUpperCase()) {
+                case 'STRONG_BUY':
+                    return 'badge-success';
+                case 'BUY':
+                    return 'badge-success';
+                case 'HOLD':
+                    return 'badge-info';
+                case 'WEAK_HOLD':
+                    return 'badge-warning';
+                case 'AVOID':
+                    return 'badge-danger';
+                default:
+                    return 'badge-secondary';
+            }
+        }
     </script>
 </body>
 </html>
