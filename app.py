@@ -1,5 +1,6 @@
 # app.py
 
+from nsetools import Nse
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -7,20 +8,18 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
 
-app = FastAPI(title="Robust Nifty 500 Scanner")
+app = FastAPI(title="Full NSE Scanner")
 
-# Complete Nifty 500 symbol list (abbreviated; replace with full 500 symbols)
-NIFTY500 = [
-    "RELIANCE.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS","TCS.NS",
-    # … add all remaining Nifty 500 symbols here …
-]
+# 1) Dynamically load ALL NSE-listed symbols
+nse_client = Nse()
+all_codes = nse_client.get_stock_codes()  # Dict: {symbol: name}
+# Remove the header entry
+all_codes.pop('SYMBOL', None)
+# Append “.NS” suffix for Yahoo Finance
+NSE_SYMBOLS = [f"{sym}.NS" for sym in all_codes.keys()]
 
 # Shared storage for latest scan
-latest_scan = {
-    "status": "idle",     # idle, running, completed
-    "timestamp": None,
-    "results": []
-}
+latest_scan = {"status":"idle","timestamp":None,"results":[]}
 
 def fetch_weekly(symbol: str, years: int = 2) -> pd.DataFrame:
     end = datetime.today()
